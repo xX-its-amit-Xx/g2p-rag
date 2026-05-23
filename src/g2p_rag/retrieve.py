@@ -168,6 +168,7 @@ class VectorStore:
         query: str,
         embedder: EmbeddingModel,
         k: int = 20,
+        where: dict | None = None,
     ) -> list[SearchResult]:
         """Dense vector search for *query* using cosine similarity.
 
@@ -175,16 +176,20 @@ class VectorStore:
             query: Natural-language query string.
             embedder: EmbeddingModel used to embed the query.
             k: Number of results to return.
+            where: Optional ChromaDB metadata filter (e.g. ``{"gene": {"$in": ["BRCA1"]}}``).
 
         Returns:
             List of SearchResult sorted by descending similarity score.
         """
         q_vec: list[float] = embedder.embed([query])[0]
-        results = self._col.query(
+        query_kwargs: dict = dict(
             query_embeddings=[q_vec],
             n_results=min(k, self._col.count() or 1),
             include=["documents", "metadatas", "distances"],
         )
+        if where:
+            query_kwargs["where"] = where
+        results = self._col.query(**query_kwargs)
 
         search_results: list[SearchResult] = []
         docs = results.get("documents", [[]])[0]
@@ -308,6 +313,7 @@ class HybridRetriever:
         k: int = 5,
         dense_k: int = 20,
         sparse_k: int = 20,
+        gene_filter: list[str] | None = None,
     ) -> list[SearchResult]:
         """Retrieve the top-*k* chunks using RRF over dense and sparse rankings.
 
@@ -321,12 +327,17 @@ class HybridRetriever:
             k: Final number of results to return.
             dense_k: Candidate pool size for the dense retrieval leg.
             sparse_k: Candidate pool size for the sparse retrieval leg.
+            gene_filter: Optional list of gene symbols to restrict results to.
 
         Returns:
             Top-*k* SearchResult objects with source="hybrid", ranked by RRF score.
         """
-        dense_results = self._vs.search(query, self._embedder, k=dense_k)
+        chroma_where = {"gene": {"$in": gene_filter}} if gene_filter else None
+        dense_results = self._vs.search(query, self._embedder, k=dense_k, where=chroma_where)
         sparse_results = self._bm25.search(query, k=sparse_k)
+        if gene_filter:
+            gene_set = set(gene_filter)
+            sparse_results = [r for r in sparse_results if r.chunk.gene in gene_set]
 
         # Map chunk identity → RRF accumulator.
         # Use (gene, chunk_type, residue_start, residue_end, text_hash) as key

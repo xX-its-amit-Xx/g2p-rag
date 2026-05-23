@@ -31,11 +31,35 @@ flowchart TD
 
 ## Quickstart
 
+**As a library** (recommended for downstream projects):
+
+```python
+pip install g2p-rag
+```
+
+```python
+from g2p_rag import G2PRetriever
+
+retriever = G2PRetriever(persist_dir="./data/chroma")
+results = retriever.retrieve("What BRCA1 domains overlap with pathogenic missense variants?")
+for chunk in results:
+    print(chunk.gene, chunk.chunk_type, chunk.residue_range, f"score={chunk.score:.3f}")
+```
+
+**CLI (build your own index)**:
+
 ```bash
-uv pip install -e ".[dev]"
 g2p-rag ingest --gene BRCA1 --gene TP53 --gene KRAS
 g2p-rag query "What BRCA1 domains overlap with pathogenic missense variants?"
 ```
+
+**Skip the 30-minute ingest** — download a pre-built snapshot:
+
+```bash
+make download-index
+```
+
+See [docs/INTEGRATION.md](docs/INTEGRATION.md) for LangChain and LlamaIndex adapter usage.
 
 ---
 

@@ -8,6 +8,19 @@ authors = [
     { name = "Amit Shenoy", email = "shenoy.am@husky.neu.edu" }
 ]
 requires-python = ">=3.11"
+keywords = ["genomics", "RAG", "retrieval-augmented-generation", "proteins", "bioinformatics", "LLM"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "anthropic>=0.28.0",
     "chromadb>=0.5.0",
@@ -37,6 +50,21 @@ dev = [
     "nbformat>=5.9.0",
     "openai>=1.30.0",
 ]
+langchain = [
+    "langchain>=0.2.0",
+    "langchain-anthropic>=0.1.0",
+    "langchain-community>=0.2.0",
+    "langchain-core>=0.2.0",
+]
+llamaindex = [
+    "llama-index-core>=0.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/amitshenoy/g2p-rag"
+Documentation = "https://github.com/amitshenoy/g2p-rag/blob/main/docs/INTEGRATION.md"
+"Bug Tracker" = "https://github.com/amitshenoy/g2p-rag/issues"
+"Source Code" = "https://github.com/amitshenoy/g2p-rag"
 
 [project.scripts]
 g2p-rag = "g2p_rag.cli:app"
@@ -48,3 +76,7 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
