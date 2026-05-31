@@ -118,6 +118,100 @@ class ClinVarVariant(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# UniProt-direct fallback for per-residue features
+# ---------------------------------------------------------------------------
+#
+# The legacy G2P /protein-features endpoint was retired upstream (2026-05).
+# Per-residue annotations are now sourced directly from UniProt's REST API,
+# which is the same primary data G2P historically wrapped. We pull domains,
+# PTM sites, and binding-site features from the UniProt response and shape
+# them as the ProteinFeatures model the rest of the package expects.
+
+_UNIPROT_ENTRY_URL = "https://rest.uniprot.org/uniprotkb"
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+def _uniprot_features_sync(uniprot_id: str) -> "ProteinFeatures":
+    """Synchronous UniProt features fetch for use inside G2PClient.
+
+    Returns a populated ProteinFeatures or raises on hard failure (the
+    caller logs + returns an empty model on exception).
+    """
+    if not uniprot_id:
+        return ProteinFeatures(uniprot_id="")
+
+    # Strip isoform suffix (P38398-1 -> P38398) for canonical UniProt entry.
+    acc = uniprot_id.split("-", 1)[0]
+    with httpx.Client(timeout=20.0,
+                       headers={"Accept": "application/json"}) as client:
+        r = client.get(f"{_UNIPROT_ENTRY_URL}/{acc}.json")
+        r.raise_for_status()
+        data = r.json()
+
+    seq = (data.get("sequence", {}) or {}).get("value", "")
+    length = len(seq) if seq else (data.get("sequence", {}) or {}).get("length", 0)
+
+    domains: list[ProteinDomain] = []
+    ptm_sites: list[PTMSite] = []
+    pockets: list[PocketAnnotation] = []
+
+    # UniProt "features" list contains DOMAIN, REGION, MOTIF, ACT_SITE,
+    # BINDING, MOD_RES (PTM), CARBOHYD, LIPID, DISULFID, ...
+    for feat in data.get("features", []):
+        ftype = feat.get("type", "")
+        desc = feat.get("description", "") or ""
+        loc = feat.get("location", {}) or {}
+        start = (loc.get("start") or {}).get("value")
+        end = (loc.get("end") or {}).get("value")
+        try:
+            start_i = int(start) if start is not None else None
+            end_i = int(end) if end is not None else start_i
+        except (TypeError, ValueError):
+            continue
+
+        if ftype in ("Domain", "Region of interest", "Motif"):
+            if start_i is not None and end_i is not None:
+                domains.append(ProteinDomain(
+                    name=desc[:80] or ftype, start=start_i, end=end_i,
+                    domain_type=ftype, description=desc,
+                ))
+        elif ftype in ("Modified residue", "Glycosylation", "Lipidation",
+                        "Disulfide bond", "Cross-link"):
+            if start_i is not None:
+                ptm_sites.append(PTMSite(
+                    position=start_i, ptm_type=ftype, evidence=desc,
+                ))
+        elif ftype in ("Binding site", "Active site", "Site"):
+            # Surface binding/active sites as pockets (residue list of length 1)
+            if start_i is not None:
+                pockets.append(PocketAnnotation(
+                    pocket_id=f"{ftype}:{start_i}",
+                    residues=[start_i],
+                    druggability_score=0.0,
+                ))
+
+    # PPI from comments[type=INTERACTION]
+    ppi: list[PPInteraction] = []
+    for c in data.get("comments", []):
+        if c.get("commentType") == "INTERACTION":
+            for interaction in c.get("interactions", []):
+                partner_obj = interaction.get("interactantTwo") or {}
+                partner_gene = partner_obj.get("geneName", "")
+                if partner_gene:
+                    ppi.append(PPInteraction(
+                        partner=partner_gene,
+                        interaction_type="binary",
+                        evidence=interaction.get("interactionType", ""),
+                    ))
+
+    return ProteinFeatures(
+        uniprot_id=acc, sequence=seq, length=int(length or 0),
+        domains=domains, ptm_sites=ptm_sites, ppi=ppi, pockets=pockets,
+        mavedb_scores=[],  # MaveDB is a separate API; not fetched in fallback
+    )
+
+
+# ---------------------------------------------------------------------------
 # G2P client
 # ---------------------------------------------------------------------------
 
@@ -183,8 +277,15 @@ class G2PClient:
     # ------------------------------------------------------------------
 
     def get_gene_structure_map(self, gene_symbol: str) -> GeneStructureMap:
-        """Fetch the gene-transcript-protein isoform structure map for a gene."""
-        endpoint = f"/gene-transcript-protein-isoform-structure-map/{gene_symbol}"
+        """Fetch gene metadata + UniProt + cross-refs for a gene.
+
+        Calls the current G2P portal endpoint `/api/gene/{symbol}` (the older
+        `gene-transcript-protein-isoform-structure-map/{symbol}` endpoint was
+        retired upstream — 404 as of 2026-05). Parsed payload includes the
+        canonical UniProt accession, ChEMBL ID, AlphaFold model, and a
+        delimited PDB list, all of which feed downstream chunking.
+        """
+        endpoint = f"/gene/{gene_symbol}"
         log.info("g2p.get_gene_structure_map", gene=gene_symbol)
         try:
             data = self._get(endpoint)
@@ -194,14 +295,25 @@ class G2PClient:
             return GeneStructureMap(gene_symbol=gene_symbol)
 
     def get_protein_features(self, uniprot_id: str) -> ProteinFeatures:
-        """Fetch all structural and functional annotations for a UniProt accession."""
-        endpoint = f"/protein-features/{uniprot_id}"
+        """Fetch per-residue protein features (domains, PTMs, PPI) for a UniProt accession.
+
+        The legacy G2P `/protein-features/{uniprot}` endpoint was retired
+        upstream. We now source per-residue features directly from UniProt's
+        REST API (FUNCTION / SUBUNIT / PTM / DOMAIN comments + features list),
+        which is the same primary data G2P historically curated.
+
+        Cross-refs that G2P uniquely provides (AlphaFold ID, ChEMBL ID, PDB
+        list, drug bank, gencc diseases) are kept in GeneStructureMap and
+        surfaced separately by chunk.py.
+        """
+        endpoint = f"/uniprot-features/{uniprot_id}"
         log.info("g2p.get_protein_features", uniprot_id=uniprot_id)
         try:
-            data = self._get(endpoint)
-            return self._parse_protein_features(uniprot_id, data)
+            features = _uniprot_features_sync(uniprot_id)
+            return features
         except Exception as exc:
-            log.warning("g2p.get_protein_features.failed", uniprot_id=uniprot_id, error=str(exc))
+            log.warning("g2p.get_protein_features.uniprot_fallback_failed",
+                         uniprot_id=uniprot_id, error=str(exc))
             return ProteinFeatures(uniprot_id=uniprot_id)
 
     # ------------------------------------------------------------------
@@ -209,33 +321,48 @@ class G2PClient:
     # ------------------------------------------------------------------
 
     def _parse_structure_map(self, gene_symbol: str, data: dict) -> GeneStructureMap:
-        """Parse a raw G2P structure-map response into a GeneStructureMap."""
-        # Unwrap optional top-level envelope
+        """Parse a /api/gene/{symbol} response into a GeneStructureMap.
+
+        Current G2P portal payload (2026-05) shape::
+
+            {"status": "success", "data": [
+                {"GeneCard": "BRCA1", "UniprotKB_Entry": "P38398",
+                 "Canonical_Protein_Isoform": "P38398-1",
+                 "PDBinformation": "1JM7;NMR;…&1JNX;X-ray;…",
+                 "AlphaFold": "P38398", "ChEMBL": "CHEMBL5990",
+                 "DrugBank": "not-available", "HGNC_alias": "FANCS,RNF53,…",
+                 …}]}
+
+        The newer endpoint doesn't include the per-residue sequence; we keep
+        sequence="" and rely on get_protein_features to fetch UniProt content.
+        """
+        # Unwrap the {status, data: [record]} envelope.
+        rec: dict = {}
         if isinstance(data, dict):
-            payload: dict = data.get("data") or data.get("results") or data
-        else:
-            payload = {}
+            inner = data.get("data") or data.get("results")
+            if isinstance(inner, list) and inner:
+                rec = inner[0] if isinstance(inner[0], dict) else {}
+            elif isinstance(inner, dict):
+                rec = inner
+            else:
+                rec = data
 
         def _pick(*keys: str) -> str:
             for k in keys:
-                v = payload.get(k)
-                if v:
+                v = rec.get(k)
+                if v and v != "not-available":
                     return str(v)
             return ""
 
-        uniprot_id = _pick("uniprot_id", "uniprotId", "uniprotID")
-        transcript_id = _pick("transcript_id", "transcriptId", "transcriptID")
-        protein_id = _pick("protein_id", "proteinId", "proteinID")
-        sequence = _pick("sequence", "proteinSequence", "seq")
-        length = len(sequence) if sequence else int(payload.get("length", 0))
-
+        uniprot_id = _pick("UniprotKB_Entry", "uniprot_id", "uniprotId")
+        protein_id = _pick("Canonical_Protein_Isoform", "protein_id")
         return GeneStructureMap(
             gene_symbol=gene_symbol,
             uniprot_id=uniprot_id,
-            transcript_id=transcript_id,
+            transcript_id="",
             protein_id=protein_id,
-            sequence=sequence,
-            length=length,
+            sequence="",
+            length=0,
         )
 
     def _parse_protein_features(self, uniprot_id: str, data: dict) -> ProteinFeatures:
