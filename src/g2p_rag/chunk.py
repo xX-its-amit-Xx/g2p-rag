@@ -139,14 +139,24 @@ class ProteinChunker:
         features = structure.features
         domains: list[ProteinDomain] = getattr(features, "domains", [])
         ptm_sites: list[PTMSite] = getattr(features, "ptm_sites", [])
-        ppi_partners: list = getattr(features, "ppi_partners", [])
+        # UniProt-backed enrichment uses `ppi` (matches ProteinFeatures model);
+        # the older field name `ppi_partners` is kept as a fallback so chunks
+        # don't silently drop interactions when only one source is populated.
+        ppi_partners: list = (getattr(features, "ppi", []) or
+                                getattr(features, "ppi_partners", []))
         pockets: list = getattr(features, "pockets", [])
         mavedb_scores: list = getattr(features, "mavedb_scores", [])
 
+        # Prefer features.sequence (UniProt-derived) over structure.sequence
+        # (blank since the G2P /api/gene/ endpoint doesn't return sequences).
+        protein_seq = (getattr(features, "sequence", "")
+                        or getattr(structure, "sequence", "")
+                        or "")
+
         for domain in domains:
             # Sequence span
-            if structure.sequence:
-                seq_span = structure.sequence[domain.start - 1 : domain.end]
+            if protein_seq:
+                seq_span = protein_seq[domain.start - 1 : domain.end]
             else:
                 seq_span = "N/A"
 
@@ -338,7 +348,11 @@ class ProteinChunker:
         features = structure.features
         domains: list[ProteinDomain] = getattr(features, "domains", [])
         ptm_sites: list[PTMSite] = getattr(features, "ptm_sites", [])
-        ppi_partners: list = getattr(features, "ppi_partners", [])
+        # UniProt-backed enrichment uses `ppi` (matches ProteinFeatures model);
+        # the older field name `ppi_partners` is kept as a fallback so chunks
+        # don't silently drop interactions when only one source is populated.
+        ppi_partners: list = (getattr(features, "ppi", []) or
+                                getattr(features, "ppi_partners", []))
         pockets: list = getattr(features, "pockets", [])
         mavedb_scores: list = getattr(features, "mavedb_scores", [])
 
@@ -374,11 +388,17 @@ class ProteinChunker:
         vus = _vus_count(variants)
         benign = _benign_count(variants)
 
+        # Prefer features.length (UniProt-derived, always present when features
+        # were enriched) over structure.length (which is 0 since the current
+        # G2P /api/gene/ endpoint doesn't return the sequence).
+        protein_length = (getattr(features, "length", 0)
+                            or getattr(structure, "length", 0)
+                            or 0)
         text = (
             f"Gene: {structure.gene_symbol} | UniProt: {structure.uniprot_id}\n"
             f"Protein summary\n"
             f"\n"
-            f"Canonical sequence length: {structure.length} aa\n"
+            f"Canonical sequence length: {protein_length} aa\n"
             f"Transcript: {structure.transcript_id} | Protein: {structure.protein_id}\n"
             f"\n"
             f"Domains ({len(domains)}): {domain_str}\n"
@@ -399,7 +419,7 @@ class ProteinChunker:
             gene=structure.gene_symbol,
             uniprot_id=structure.uniprot_id,
             residue_start=1,
-            residue_end=structure.length,
+            residue_end=protein_length,
         )
         log.debug(
             "protein_summary_chunk created",
