@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +18,48 @@ from g2p_rag.chunk import Chunk
 from g2p_rag.embed import EmbeddingModel, get_embedder
 
 log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Index manifest helpers (F2 — every build stamps full provenance)
+# ---------------------------------------------------------------------------
+
+
+def _git_head_short(start: Path | None = None) -> str:
+    """Return the short SHA of the current git HEAD for the g2p-rag repo.
+
+    Returns an empty string if git is unavailable or the path isn't a repo.
+    Used for index manifest provenance so consumers can pin a built index
+    back to the exact source commit.
+    """
+    cwd = start or Path(__file__).resolve().parent
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def _g2p_api_base() -> str:
+    """Return the G2P portal API base URL as recorded in fetch.py.
+
+    Imported lazily to avoid a circular import; this is the *upstream* the
+    snapshot was built from, not a runtime client configuration knob.
+    """
+    try:
+        from g2p_rag.fetch import G2P_BASE_URL
+        return G2P_BASE_URL
+    except Exception:  # pragma: no cover — defensive
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +115,7 @@ class VectorStore:
         persist_dir: Path,
         collection_name: str = "g2p_proteins",
         embedding_model_name: str | None = None,
+        manifest: dict[str, Any] | None = None,
     ) -> None:
         """Initialise a persistent ChromaDB client and get-or-create the collection.
 
@@ -80,12 +126,28 @@ class VectorStore:
                 as collection metadata at creation time.  Has no effect on an
                 already-existing collection (chromadb's get_or_create does not
                 overwrite metadata).
+            manifest: Optional dict of additional provenance fields to persist
+                as ChromaDB collection metadata at creation time (e.g.
+                g2p_rag_version, build_utc, gene_count, g2p_api_base,
+                build_commit).  Has no effect on an already-existing
+                collection (chromadb's get_or_create does not overwrite
+                metadata).  See F2 in the reproducibility-hardening plan.
         """
         persist_dir.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(persist_dir))
         creation_metadata: dict[str, Any] = {"hnsw:space": "cosine"}
         if embedding_model_name:
             creation_metadata["embedding_model"] = embedding_model_name
+        if manifest:
+            # Only scalar metadata values are allowed by ChromaDB; coerce
+            # everything to str to be safe and avoid silently dropping fields.
+            for k, v in manifest.items():
+                if v is None:
+                    continue
+                if isinstance(v, (str, int, float, bool)):
+                    creation_metadata[k] = v
+                else:
+                    creation_metadata[k] = str(v)
         self._col = self._client.get_or_create_collection(
             collection_name,
             metadata=creation_metadata,
@@ -95,6 +157,7 @@ class VectorStore:
             persist_dir=str(persist_dir),
             collection=collection_name,
             existing_count=self._col.count(),
+            manifest_keys=sorted((manifest or {}).keys()),
         )
 
     # ------------------------------------------------------------------
@@ -405,6 +468,15 @@ def build_index(
     Ingestion is idempotent: existing documents with matching deterministic IDs are
     silently overwritten via upsert.
 
+    The newly-created collection is stamped with an index manifest
+    (g2p_rag_version, build_utc, gene_count, embedding_model, g2p_api_base,
+    build_commit) so consumers can later inspect provenance via
+    ``coll.metadata`` without rebuilding the index.  ChromaDB's
+    get_or_create_collection does NOT overwrite metadata on an existing
+    collection, so the manifest only takes effect on a fresh build (this is
+    intentional: silently mutating provenance on a stale collection would be
+    worse than leaving it incomplete).
+
     Args:
         chunks: Genomic chunks to embed and index.
         persist_dir: Directory used for ChromaDB persistence.
@@ -418,17 +490,57 @@ def build_index(
     if embedder is None:
         embedder = get_embedder()
 
+    # ------------------------------------------------------------------
+    # Compose the provenance manifest BEFORE creating the collection so
+    # the metadata lands on the first .get_or_create_collection() call.
+    # We import __version__ lazily to avoid a hard circular dep at module
+    # import time.
+    # ------------------------------------------------------------------
+    try:
+        from g2p_rag import __version__ as _pkg_version
+    except Exception:  # pragma: no cover — defensive
+        _pkg_version = "unknown"
+
+    unique_genes: set[str] = {c.gene for c in chunks if getattr(c, "gene", "")}
+    chunk_type_counts: dict[str, int] = {}
+    for c in chunks:
+        ct = getattr(c, "chunk_type", "") or "unknown"
+        chunk_type_counts[ct] = chunk_type_counts.get(ct, 0) + 1
+
+    # ChromaDB metadata values must be scalars (str / int / float / bool);
+    # we flatten the per-type counts into ``chunk_count_<type>`` keys so
+    # consumers can read them via ``coll.metadata`` without parsing JSON.
+    manifest: dict[str, Any] = {
+        "g2p_rag_version": _pkg_version,
+        "build_utc": _dt.datetime.now(_dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "gene_count": len(unique_genes),
+        "embedding_model": embedder.model_name,
+        "g2p_api_base": _g2p_api_base(),
+        "build_commit": _git_head_short(),
+        "total_chunks": len(chunks),
+    }
+    for ct, n in chunk_type_counts.items():
+        manifest[f"chunk_count_{ct}"] = n
+
     vs = VectorStore(
         persist_dir=persist_dir,
         collection_name=collection_name,
         embedding_model_name=embedder.model_name,
+        manifest=manifest,
     )
     vs.ingest(chunks, embedder)
 
     bm25 = BM25Index()
     bm25.build(chunks)
 
-    log.info("build_index.done", chunks=len(chunks), collection=collection_name)
+    log.info(
+        "build_index.done",
+        chunks=len(chunks),
+        collection=collection_name,
+        manifest=manifest,
+    )
     return HybridRetriever(vector_store=vs, bm25_index=bm25, embedder=embedder)
 
 
@@ -455,6 +567,11 @@ def index_stats(persist_dir: Path, collection_name: str = "g2p_proteins") -> dic
     """Return a dict of stats about the persisted ChromaDB collection.
 
     Raises CollectionEmptyError if the collection does not exist or is empty.
+
+    The returned dict also includes the index manifest persisted by
+    ``build_index`` (g2p_rag_version, build_utc, gene_count, embedding_model,
+    g2p_api_base, build_commit, total_chunks, chunk_count_<type>) so callers
+    don't need to poke at the ChromaDB internals to print provenance.
     """
     vs = VectorStore(persist_dir=persist_dir, collection_name=collection_name)
     count = vs.count()
@@ -464,16 +581,35 @@ def index_stats(persist_dir: Path, collection_name: str = "g2p_proteins") -> dic
     peek = vs._col.peek(min(count, 500))
     genes: set[str] = set()
     chunk_types: set[str] = set()
+    source_apis: set[str] = set()
     for meta in (peek.get("metadatas") or []):
         if meta:
             genes.add(meta.get("gene", ""))
             chunk_types.add(meta.get("chunk_type", ""))
+            sa = meta.get("source_api", "")
+            if sa:
+                source_apis.add(str(sa))
+
+    coll_metadata: dict[str, Any] = dict(vs._col.metadata or {})
+
     return {
         "total_chunks": count,
         "genes": sorted(g for g in genes if g),
         "chunk_types": sorted(ct for ct in chunk_types if ct),
+        "source_apis": sorted(source_apis),
         "persist_dir": str(persist_dir),
         "collection_name": collection_name,
+        # Full manifest as written by build_index (or partial / empty if the
+        # collection was built before manifest support landed).
+        "manifest": coll_metadata,
+        # Convenience top-level aliases so cookbook print_index_manifest()
+        # doesn't have to dig into manifest[...]:
+        "g2p_rag_version": coll_metadata.get("g2p_rag_version", ""),
+        "build_utc": coll_metadata.get("build_utc", ""),
+        "gene_count": coll_metadata.get("gene_count", 0),
+        "embedding_model": coll_metadata.get("embedding_model", ""),
+        "g2p_api_base": coll_metadata.get("g2p_api_base", ""),
+        "build_commit": coll_metadata.get("build_commit", ""),
     }
 
 

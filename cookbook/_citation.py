@@ -40,7 +40,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from g2p_rag import RetrievedChunk  # noqa: E402  (after sys.path shim)
 
 
-__all__ = ["Cited", "find_in_chunks", "assert_supported"]
+__all__ = [
+    "Cited",
+    "find_in_chunks",
+    "assert_supported",
+    "print_index_manifest",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +192,59 @@ def assert_supported(
         "  No chunk text contained any hint. Either retrieve more chunks, "
         "broaden the hints, or mark this sentence with source=None and "
         "accept the [NO_RAG_SOURCE] tag."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index manifest printer (F6)
+# ---------------------------------------------------------------------------
+
+def print_index_manifest(retriever: object) -> None:
+    """Print a one-line provenance banner for the retriever's index.
+
+    Cookbook scripts should call this once at startup so the captured
+    transcript records "indexed with g2p-rag vX.Y.Z built <UTC> from N
+    genes via embedding-model M, git commit C" — without that line, a
+    downstream reviewer cannot tell which snapshot of the corpus the
+    printed Cited(...) chunks came from.
+
+    Accepts either a ``G2PRetriever`` (the public facade) or anything
+    that exposes a ``persist_dir`` / ``collection_name`` attribute pair;
+    falls back to a clearly-labelled "manifest unavailable" line rather
+    than raising so misconfigured cookbooks still produce output.
+    """
+    try:
+        from g2p_rag.retrieve import index_stats, CollectionEmptyError
+    except Exception as exc:  # pragma: no cover — defensive
+        print(f"[index-manifest unavailable: {exc!s}]")
+        return
+
+    persist_dir = getattr(retriever, "persist_dir", None)
+    collection_name = getattr(retriever, "collection_name", "g2p_proteins")
+    if persist_dir is None:
+        print("[index-manifest unavailable: retriever has no persist_dir]")
+        return
+
+    try:
+        stats = index_stats(Path(persist_dir), collection_name=collection_name)
+    except CollectionEmptyError:
+        print("[index-manifest unavailable: collection is empty]")
+        return
+    except Exception as exc:  # pragma: no cover — defensive
+        print(f"[index-manifest unavailable: {exc!s}]")
+        return
+
+    version = stats.get("g2p_rag_version") or "unknown"
+    build_utc = stats.get("build_utc") or "unknown"
+    gene_count = stats.get("gene_count") or len(stats.get("genes", []))
+    embed_model = stats.get("embedding_model") or "unknown"
+    commit = stats.get("build_commit") or "unknown"
+    total = stats.get("total_chunks") or 0
+
+    print(
+        f"# Index manifest: g2p-rag v{version} built {build_utc} "
+        f"from {gene_count} gene(s), {total} chunk(s), "
+        f"embedding-model {embed_model}, build_commit {commit}"
     )
 
 

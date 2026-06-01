@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import re
@@ -28,6 +29,86 @@ GENE_LIST: list[str] = [
 ]
 G2P_BASE_URL = "https://g2p.broadinstitute.org/api"
 CLINVAR_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+
+# ---------------------------------------------------------------------------
+# Raw-response snapshot helper (F5 — traceability)
+# ---------------------------------------------------------------------------
+
+
+def _write_snapshot(
+    snapshot_root: Path,
+    gene: str,
+    source: str,
+    payload: Any,
+) -> str:
+    """Persist a raw upstream response to data/snapshots/<gene>/<source>.json.
+
+    Returns the sha256 hex digest of the serialised JSON body so the caller
+    can record it in the manifest. Returns "" on serialisation failure (we
+    deliberately swallow errors here so a snapshot bug never blocks ingest).
+    """
+    try:
+        body = json.dumps(payload, sort_keys=True, default=str)
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        gene_dir = snapshot_root / gene
+        gene_dir.mkdir(parents=True, exist_ok=True)
+        out_path = gene_dir / f"{source}.json"
+        out_path.write_text(body, encoding="utf-8")
+        return digest
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning(
+            "fetch.snapshot.write_failed",
+            gene=gene,
+            source=source,
+            error=str(exc),
+        )
+        return ""
+
+
+def _update_snapshot_manifest(
+    snapshot_root: Path,
+    entries: dict[str, dict[str, str]],
+) -> None:
+    """Merge new snapshot entries into data/snapshots/.manifest.json.
+
+    Manifest schema::
+
+        {
+          "BRCA1": {
+            "g2p":     {"sha256": "...", "fetched_utc": "..."},
+            "uniprot": {"sha256": "...", "fetched_utc": "..."},
+            "clinvar": {"sha256": "...", "fetched_utc": "..."}
+          },
+          ...
+        }
+
+    The full snapshots directory is gitignored; only the manifest itself is
+    expected to be committed so a reviewer can verify which upstream payload
+    each chunk was derived from without distributing the raw bodies.
+    """
+    if not entries:
+        return
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = snapshot_root / ".manifest.json"
+    existing: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    for gene, sources in entries.items():
+        gene_block = existing.get(gene)
+        if not isinstance(gene_block, dict):
+            gene_block = {}
+        gene_block.update(sources)
+        existing[gene] = gene_block
+    manifest_path.write_text(
+        json.dumps(existing, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -292,6 +373,23 @@ def _parse_gencc_diseases(raw: Any) -> list["GenccDisease"]:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+def _uniprot_fetch_raw(uniprot_id: str) -> dict | None:
+    """Fetch the raw UniProt JSON entry for an accession (None when input is empty).
+
+    Split out from :func:`_uniprot_features_sync` so the snapshot-capturing
+    code path can hand the raw body to :func:`_write_snapshot` without
+    re-deriving it from the parsed model.
+    """
+    if not uniprot_id:
+        return None
+    acc = uniprot_id.split("-", 1)[0]
+    with httpx.Client(timeout=20.0,
+                       headers={"Accept": "application/json"}) as client:
+        r = client.get(f"{_UNIPROT_ENTRY_URL}/{acc}.json")
+        r.raise_for_status()
+        return r.json()
+
+
 def _uniprot_features_sync(uniprot_id: str) -> "ProteinFeatures":
     """Synchronous UniProt features fetch for use inside G2PClient.
 
@@ -303,11 +401,18 @@ def _uniprot_features_sync(uniprot_id: str) -> "ProteinFeatures":
 
     # Strip isoform suffix (P38398-1 -> P38398) for canonical UniProt entry.
     acc = uniprot_id.split("-", 1)[0]
-    with httpx.Client(timeout=20.0,
-                       headers={"Accept": "application/json"}) as client:
-        r = client.get(f"{_UNIPROT_ENTRY_URL}/{acc}.json")
-        r.raise_for_status()
-        data = r.json()
+    data = _uniprot_fetch_raw(uniprot_id) or {}
+    return _parse_uniprot_features(acc, data)
+
+
+def _parse_uniprot_features(acc: str, data: dict) -> "ProteinFeatures":
+    """Parse a raw UniProt JSON entry into a ProteinFeatures model.
+
+    Kept as a stand-alone helper so the test suite and the snapshot
+    code-path can exercise parsing without an HTTP round-trip.
+    """
+    if not data:
+        return ProteinFeatures(uniprot_id=acc)
 
     seq = (data.get("sequence", {}) or {}).get("value", "")
     length = len(seq) if seq else (data.get("sequence", {}) or {}).get("length", 0)
@@ -426,11 +531,25 @@ def _uniprot_features_sync(uniprot_id: str) -> "ProteinFeatures":
 class G2PClient:
     """HTTP client for the Broad Institute G2P portal API."""
 
-    def __init__(self, cache_dir: Path, ttl: int = 86400) -> None:
-        """Initialise the client with an on-disk response cache and HTTP session."""
+    def __init__(
+        self,
+        cache_dir: Path,
+        ttl: int = 86400,
+        force_refetch: bool = False,
+    ) -> None:
+        """Initialise the client with an on-disk response cache and HTTP session.
+
+        When ``force_refetch=True`` the on-disk cache is read but treated as
+        a miss for the lifetime of this client, so callers always hit the
+        upstream API. This is wired through from the CLI's --force-refetch
+        flag (previously the flag was accepted but silently dropped, which
+        meant the only way to invalidate stale 404s was to manually delete
+        the data/g2p directory).
+        """
         cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: Cache = Cache(str(cache_dir / "g2p"))
         self._ttl = ttl
+        self._force_refetch = bool(force_refetch)
         self._client = httpx.Client(
             base_url=G2P_BASE_URL,
             timeout=30.0,
@@ -464,12 +583,21 @@ class G2PClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
     def _get(self, endpoint: str, params: dict | None = None) -> Any:
-        """Perform a GET request with retry logic and disk-cache support."""
+        """Perform a GET request with retry logic and disk-cache support.
+
+        When ``self._force_refetch`` is set the cache lookup is skipped so
+        callers see the live upstream response (the cache is still
+        updated with the fresh body so subsequent calls inside the same
+        process are cheap).
+        """
         cache_key = f"g2p:{endpoint}:{sorted((params or {}).items())}"
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            log.debug("g2p.cache_hit", endpoint=endpoint)
-            return cached
+        if not self._force_refetch:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                log.debug("g2p.cache_hit", endpoint=endpoint)
+                return cached
+        else:
+            log.debug("g2p.cache_bypass.force_refetch", endpoint=endpoint)
 
         self._rate_limit()
         log.debug("g2p.fetch", endpoint=endpoint, params=params)
@@ -492,14 +620,32 @@ class G2PClient:
         canonical UniProt accession, ChEMBL ID, AlphaFold model, and a
         delimited PDB list, all of which feed downstream chunking.
         """
+        structure, _ = self.get_gene_structure_map_with_raw(gene_symbol)
+        return structure
+
+    def get_gene_structure_map_with_raw(
+        self, gene_symbol: str
+    ) -> tuple[GeneStructureMap, Any]:
+        """Same as :meth:`get_gene_structure_map` but also returns the raw payload.
+
+        The raw payload is the deserialised JSON body as fetched (or as
+        replayed from cache) so the caller can write a snapshot file under
+        ``data/snapshots/<gene>/g2p.json`` for traceability without re-issuing
+        the upstream request. Returns ``(GeneStructureMap, None)`` when the
+        fetch fails so a single bad gene doesn't take down the batch.
+        """
         endpoint = f"/gene/{gene_symbol}"
         log.info("g2p.get_gene_structure_map", gene=gene_symbol)
         try:
             data = self._get(endpoint)
-            return self._parse_structure_map(gene_symbol, data)
+            return self._parse_structure_map(gene_symbol, data), data
         except Exception as exc:
-            log.warning("g2p.get_gene_structure_map.failed", gene=gene_symbol, error=str(exc))
-            return GeneStructureMap(gene_symbol=gene_symbol)
+            log.warning(
+                "g2p.get_gene_structure_map.failed",
+                gene=gene_symbol,
+                error=str(exc),
+            )
+            return GeneStructureMap(gene_symbol=gene_symbol), None
 
     def get_protein_features(self, uniprot_id: str) -> ProteinFeatures:
         """Fetch per-residue protein features (domains, PTMs, PPI) for a UniProt accession.
@@ -513,15 +659,27 @@ class G2PClient:
         list, drug bank, gencc diseases) are kept in GeneStructureMap and
         surfaced separately by chunk.py.
         """
-        endpoint = f"/uniprot-features/{uniprot_id}"
+        features, _ = self.get_protein_features_with_raw(uniprot_id)
+        return features
+
+    def get_protein_features_with_raw(
+        self, uniprot_id: str
+    ) -> tuple[ProteinFeatures, Any]:
+        """Same as :meth:`get_protein_features` but also returns the raw UniProt JSON.
+
+        See :meth:`get_gene_structure_map_with_raw` for the analogous
+        snapshot-capturing pattern.
+        """
         log.info("g2p.get_protein_features", uniprot_id=uniprot_id)
         try:
-            features = _uniprot_features_sync(uniprot_id)
-            return features
+            raw = _uniprot_fetch_raw(uniprot_id)
+            acc = (uniprot_id or "").split("-", 1)[0]
+            features = _parse_uniprot_features(acc, raw or {})
+            return features, raw
         except Exception as exc:
             log.warning("g2p.get_protein_features.uniprot_fallback_failed",
                          uniprot_id=uniprot_id, error=str(exc))
-            return ProteinFeatures(uniprot_id=uniprot_id)
+            return ProteinFeatures(uniprot_id=uniprot_id), None
 
     # ------------------------------------------------------------------
     # Parsers
@@ -712,12 +870,17 @@ class ClinVarClient:
         cache_dir: Path,
         ttl: int = 86400,
         api_key: str = "",
+        force_refetch: bool = False,
     ) -> None:
-        """Initialise the client; api_key is stored in memory but never logged."""
+        """Initialise the client; api_key is stored in memory but never logged.
+
+        See :class:`G2PClient` for the semantics of ``force_refetch``.
+        """
         cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: Cache = Cache(str(cache_dir / "clinvar"))
         self._ttl = ttl
         self._api_key = api_key  # never surfaced in logs or cache keys
+        self._force_refetch = bool(force_refetch)
         self._rate_interval = 0.1 if api_key else 0.34
         self._client = httpx.Client(
             base_url=CLINVAR_BASE_URL,
@@ -758,12 +921,19 @@ class ClinVarClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
     def _get(self, endpoint: str, params: dict) -> Any:
-        """Perform a GET request with retry logic and disk-cache support."""
+        """Perform a GET request with retry logic and disk-cache support.
+
+        Honours ``self._force_refetch`` for the cache bypass (analogous to
+        :meth:`G2PClient._get`).
+        """
         cache_key = self._cache_key(endpoint, params)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            log.debug("clinvar.cache_hit", endpoint=endpoint)
-            return cached
+        if not self._force_refetch:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                log.debug("clinvar.cache_hit", endpoint=endpoint)
+                return cached
+        else:
+            log.debug("clinvar.cache_bypass.force_refetch", endpoint=endpoint)
 
         # Inject api_key at request time; it must not reach the cache key
         request_params = dict(params)
@@ -782,6 +952,21 @@ class ClinVarClient:
     # Public API
     # ------------------------------------------------------------------
 
+    def get_variants_with_raw(
+        self, gene_symbol: str, max_results: int = 500
+    ) -> tuple[list[ClinVarVariant], dict]:
+        """Same as :meth:`get_variants` but returns a snapshot-friendly raw bundle.
+
+        The raw bundle has the shape
+        ``{"esearch": <esearch_response>, "esummaries": [<esummary>, ...]}``
+        so a reviewer can re-derive the parsed variants from the persisted
+        snapshot without re-issuing upstream requests. Returns
+        ``([], {"esearch": None, "esummaries": []})`` when the upstream call
+        fails for any reason.
+        """
+        variants = self.get_variants(gene_symbol, max_results=max_results)
+        return variants, getattr(self, "_last_raw_bundle", {"esearch": None, "esummaries": []})
+
     def get_variants(
         self, gene_symbol: str, max_results: int = 500
     ) -> list[ClinVarVariant]:
@@ -791,6 +976,11 @@ class ClinVarClient:
             "(pathogenic[clinsig] OR likely_pathogenic[clinsig])"
         )
         log.info("clinvar.get_variants", gene=gene_symbol)
+
+        # We populate _last_raw_bundle as we go so get_variants_with_raw() can
+        # surface the same payloads without re-issuing the upstream calls.
+        raw_bundle: dict[str, Any] = {"esearch": None, "esummaries": []}
+        self._last_raw_bundle = raw_bundle
 
         # Step 1 — ESearch to obtain a list of UIDs
         try:
@@ -803,6 +993,7 @@ class ClinVarClient:
                     "retmode": "json",
                 },
             )
+            raw_bundle["esearch"] = search_data
         except Exception as exc:
             log.warning("clinvar.esearch.failed", gene=gene_symbol, error=str(exc))
             return []
@@ -827,6 +1018,7 @@ class ClinVarClient:
                         "retmode": "json",
                     },
                 )
+                raw_bundle["esummaries"].append(summary_data)
                 variants.extend(self._parse_variants(gene_symbol, summary_data))
             except Exception as exc:
                 log.warning(
@@ -918,30 +1110,79 @@ class ClinVarClient:
 def fetch_all_genes(
     genes: list[str] = GENE_LIST,
     cache_dir: Path = Path("data"),
+    force_refetch: bool = False,
+    write_snapshots: bool = True,
 ) -> dict[str, dict[str, Any]]:
-    """Fetch structure maps, protein features, and ClinVar variants for all genes."""
-    results: dict[str, dict[str, Any]] = {}
+    """Fetch structure maps, protein features, and ClinVar variants for all genes.
 
-    with G2PClient(cache_dir=cache_dir) as g2p, ClinVarClient(cache_dir=cache_dir) as clinvar:
+    Args:
+        genes: Gene symbols to fetch.
+        cache_dir: Directory used for the diskcache stores AND (when
+            ``write_snapshots`` is True) the ``snapshots/`` directory.
+        force_refetch: When True, bypasses the on-disk diskcache so every
+            fetch hits the upstream API. The cache is still written so
+            subsequent in-process calls are cheap. Previously the CLI
+            accepted this flag but silently dropped it before reaching this
+            function — that bug is now fixed.
+        write_snapshots: When True (default) writes one raw JSON per source
+            per gene to ``<cache_dir>/snapshots/<gene>/{g2p,uniprot,clinvar}.json``
+            plus a top-level ``<cache_dir>/snapshots/.manifest.json`` with
+            sha256 + fetched_utc per file. The snapshot bodies are
+            gitignored; only the manifest is expected to be committed.
+    """
+    results: dict[str, dict[str, Any]] = {}
+    snapshot_root = cache_dir / "snapshots"
+    pending_manifest: dict[str, dict[str, str]] = {}
+
+    with G2PClient(cache_dir=cache_dir, force_refetch=force_refetch) as g2p, \
+            ClinVarClient(cache_dir=cache_dir, force_refetch=force_refetch) as clinvar:
         for gene in genes:
             log.info("fetch_all_genes.processing", gene=gene)
-            structure = g2p.get_gene_structure_map(gene)
+            structure, raw_g2p = g2p.get_gene_structure_map_with_raw(gene)
 
+            raw_uniprot: Any = None
             # Enrich with protein features when a UniProt ID is available
             if structure.uniprot_id:
-                features = g2p.get_protein_features(structure.uniprot_id)
+                features, raw_uniprot = g2p.get_protein_features_with_raw(
+                    structure.uniprot_id
+                )
                 structure = structure.model_copy(update={"features": features})
 
-            variants = clinvar.get_variants(gene)
+            variants, raw_clinvar = clinvar.get_variants_with_raw(gene)
 
             results[gene] = {
                 "structure": structure,
                 "variants": variants,
             }
+
+            if write_snapshots:
+                gene_entries: dict[str, str] = {}
+                now = _dt.datetime.now(_dt.timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+                for source, payload in (
+                    ("g2p", raw_g2p),
+                    ("uniprot", raw_uniprot),
+                    ("clinvar", raw_clinvar),
+                ):
+                    if payload is None:
+                        continue
+                    digest = _write_snapshot(snapshot_root, gene, source, payload)
+                    if digest:
+                        gene_entries[source] = {
+                            "sha256": digest,
+                            "fetched_utc": now,
+                        }
+                if gene_entries:
+                    pending_manifest[gene] = gene_entries
+
             log.info(
                 "fetch_all_genes.done",
                 gene=gene,
                 variants=len(variants),
             )
+
+    if write_snapshots and pending_manifest:
+        _update_snapshot_manifest(snapshot_root, pending_manifest)
 
     return results

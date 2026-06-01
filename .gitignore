@@ -71,10 +71,18 @@ ipython_config.py
 
 # ── Project-specific ─────────────────────────────────────────────────────────
 # Cached API responses and ChromaDB vector store
-data/
+data/*
 !data/.gitkeep
+!data/snapshots/
 chroma_db/
 *.db
+
+# F5: per-gene raw-response snapshots are deliberately NOT distributed in
+# the repo (47 genes x 3 sources can balloon to hundreds of MB). We DO
+# commit the small manifest (sha256 + fetched_utc per snapshot) so a
+# reviewer can verify which upstream payload each chunk came from.
+data/snapshots/*
+!data/snapshots/.manifest.json
 
 # ── Editor / OS artefacts ─────────────────────────────────────────────────────
 .DS_Store

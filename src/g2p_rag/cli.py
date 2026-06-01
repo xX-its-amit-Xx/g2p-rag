@@ -111,7 +111,13 @@ def ingest(
         # Step 1 — fetch
         task = progress.add_task("Fetching data from G2P + ClinVar...", total=None)
         try:
-            gene_data = fetch.fetch_all_genes(gene_list, data_dir)
+            # Thread the --force-refetch flag through to the fetcher. This
+            # used to be silently dropped (CLI flag accepted, but never
+            # passed) which meant stale 404s in the cache survived across
+            # ingests.
+            gene_data = fetch.fetch_all_genes(
+                gene_list, data_dir, force_refetch=force_refetch,
+            )
         except Exception as exc:
             console.print(f"[red]Fetch failed:[/red] {exc}")
             log.exception("ingest.fetch_failed")

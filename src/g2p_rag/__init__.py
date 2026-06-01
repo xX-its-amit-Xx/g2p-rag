@@ -11,7 +11,7 @@ integrations) is considered internal and may change between minor versions.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,21 @@ class RetrievedChunk(BaseModel):
     )
     source_url: str = Field(
         description="G2P portal URL for the protein page."
+    )
+    source_api: Optional[Literal["g2p", "uniprot", "clinvar", "gencc", "derived"]] = Field(
+        default=None,
+        description=(
+            "Upstream data provenance for this chunk. One of:\n"
+            "  'g2p'      — G2P /api/gene/ payload (cross-refs, PDB list)\n"
+            "  'uniprot'  — UniProt REST API (domains, PTMs, FUNCTION/PATHWAY/SUBUNIT/DISEASE)\n"
+            "  'clinvar'  — NCBI ClinVar esummary (variant_cluster)\n"
+            "  'gencc'    — GenCC gene-disease curations (delivered via G2P /api/gene/)\n"
+            "  'derived'  — synthetic chunk that aggregates multiple upstream sources\n"
+            "                (e.g. protein_summary).\n"
+            "May be None for collections built before manifest support landed; "
+            "such indexes should be rebuilt to enable downstream provenance "
+            "filtering."
+        ),
     )
     score: float = Field(description="RRF fusion score (higher is more relevant).")
 
@@ -131,6 +146,14 @@ class G2PRetriever:
             residue_range = (
                 f"{c.residue_start}-{c.residue_end}" if c.residue_start else ""
             )
+            # source_api lives in chunk metadata (written by chunk.py) and is
+            # surfaced as a stable top-level public field — None when the
+            # underlying collection was built before F3 landed.
+            raw_sa = (c.metadata or {}).get("source_api")
+            source_api = (
+                raw_sa if raw_sa in ("g2p", "uniprot", "clinvar", "gencc", "derived")
+                else None
+            )
             chunks.append(
                 RetrievedChunk(
                     text=c.text,
@@ -139,6 +162,7 @@ class G2PRetriever:
                     chunk_type=c.chunk_type,
                     residue_range=residue_range,
                     source_url=f"https://g2p.broadinstitute.org/protein?gene={c.gene}",
+                    source_api=source_api,
                     score=result.score,
                 )
             )

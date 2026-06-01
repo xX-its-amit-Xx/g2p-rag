@@ -245,6 +245,10 @@ class ProteinChunker:
                 metadata={
                     "domain_name": domain.name,
                     "domain_type": domain.domain_type,
+                    # F3: domain features are sourced from UniProt's REST API
+                    # (the legacy G2P /protein-features endpoint was retired
+                    # upstream in 2026-05 — see fetch._uniprot_features_sync).
+                    "source_api": "uniprot",
                 },
             )
             chunks.append(chunk)
@@ -342,6 +346,9 @@ class ProteinChunker:
                 metadata={
                     "variant_count": cluster_len,
                     "clinical_sigs": "|".join(unique_sigs),
+                    # F3: variant clusters are derived from NCBI ClinVar
+                    # esummary records (see fetch.ClinVarClient.get_variants).
+                    "source_api": "clinvar",
                 },
             )
             chunks.append(chunk)
@@ -440,6 +447,13 @@ class ProteinChunker:
             uniprot_id=structure.uniprot_id,
             residue_start=1,
             residue_end=protein_length,
+            metadata={
+                # F3: the protein summary is a synthetic chunk that
+                # aggregates G2P + UniProt + ClinVar counts — label it
+                # "derived" so consumers don't mis-attribute its content
+                # to any single upstream API.
+                "source_api": "derived",
+            },
         )
         log.debug(
             "protein_summary_chunk created",
@@ -478,6 +492,12 @@ class ProteinChunker:
             uniprot_id=structure.uniprot_id,
             residue_start=0,
             residue_end=0,
+            metadata={
+                # F3: function / pathway / subunit / disease are all pulled
+                # from UniProt's comments[] section (see
+                # fetch._uniprot_features_sync).
+                "source_api": "uniprot",
+            },
         )
         log.debug(
             f"{chunk_type}_chunk created",
@@ -558,6 +578,9 @@ class ProteinChunker:
                 "drugbank_id": drugbank,
                 "omim_id": omim,
                 "orphanet_id": orphanet,
+                # F3: cross-refs are unique to the G2P /api/gene/ payload
+                # (see G2PClient.get_gene_structure_map).
+                "source_api": "g2p",
             },
         )
         log.debug(
@@ -599,7 +622,12 @@ class ProteinChunker:
             uniprot_id=structure.uniprot_id,
             residue_start=0,
             residue_end=0,
-            metadata={"pdb_count": len(pdbs)},
+            metadata={
+                "pdb_count": len(pdbs),
+                # F3: PDB list comes from the G2P /api/gene/ PDBinformation
+                # column (see fetch._parse_pdb_information).
+                "source_api": "g2p",
+            },
         )
         log.debug(
             "structures_chunk created",
@@ -643,7 +671,12 @@ class ProteinChunker:
             uniprot_id=structure.uniprot_id,
             residue_start=0,
             residue_end=0,
-            metadata={"disease_count": len(diseases)},
+            metadata={
+                "disease_count": len(diseases),
+                # F3: GenCC associations are carried in the G2P
+                # /api/gene/ payload's genccDiseases field.
+                "source_api": "gencc",
+            },
         )
         log.debug(
             "diseases_chunk created",
