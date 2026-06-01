@@ -50,9 +50,9 @@ def g2p_retriever(tmp_path, mock_search_result):
 
 
 def test_version_is_string():
-    """__version__ must be a string equal to '0.1.0'."""
+    """__version__ must be a string equal to '0.1.1'."""
     assert isinstance(__version__, str)
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.1.1"
 
 
 def test_retrieved_chunk_is_pydantic_model():

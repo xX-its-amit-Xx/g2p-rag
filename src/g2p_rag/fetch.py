@@ -86,6 +86,13 @@ class ProteinFeatures(BaseModel):
     ppi: list[PPInteraction] = []
     pockets: list[PocketAnnotation] = []
     mavedb_scores: list[MaveDBScore] = []
+    # Free-text biology pulled from UniProt's comments[] section. Each is
+    # the cleaned, de-cited, length-capped text for that comment type, or
+    # empty string when UniProt has no such comment for this protein.
+    function_text: str = ""
+    pathway_text: str = ""
+    subunit_text: str = ""
+    disease_text: str = ""
 
 
 class GeneStructureMap(BaseModel):
@@ -128,6 +135,26 @@ class ClinVarVariant(BaseModel):
 # them as the ProteinFeatures model the rest of the package expects.
 
 _UNIPROT_ENTRY_URL = "https://rest.uniprot.org/uniprotkb"
+
+# Matches "(PubMed:12345)", "(PubMed:12345, PubMed:67890)", and bare
+# "PubMed:12345" tokens used as inline citations in UniProt comment text.
+_PUBMED_CITE_RE = re.compile(r"\s*\(?PubMed:\d+(?:,\s*PubMed:\d+)*\)?")
+_MULTI_SPACE_RE = re.compile(r"\s+")
+
+
+def _clean_comment_text(text: str, max_chars: int = 500) -> str:
+    """Strip PubMed citations, collapse whitespace, and cap length."""
+    if not text:
+        return ""
+    cleaned = _PUBMED_CITE_RE.sub("", text)
+    cleaned = _MULTI_SPACE_RE.sub(" ", cleaned).strip()
+    if len(cleaned) > max_chars:
+        # Truncate at the last word boundary inside max_chars to avoid
+        # mid-word cuts; fall back to a hard cut if no boundary exists.
+        cut = cleaned[:max_chars]
+        last_space = cut.rfind(" ")
+        cleaned = (cut[:last_space] if last_space > 0 else cut).rstrip() + "…"
+    return cleaned
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
@@ -190,10 +217,19 @@ def _uniprot_features_sync(uniprot_id: str) -> "ProteinFeatures":
                     druggability_score=0.0,
                 ))
 
-    # PPI from comments[type=INTERACTION]
+    # PPI from comments[type=INTERACTION] + free-text biology from
+    # FUNCTION / PATHWAY / SUBUNIT / DISEASE comment types. We accumulate
+    # text fragments per type and join+clean once at the end so a protein
+    # with multiple FUNCTION blocks still produces a single chunk.
     ppi: list[PPInteraction] = []
+    function_parts: list[str] = []
+    pathway_parts: list[str] = []
+    subunit_parts: list[str] = []
+    disease_parts: list[str] = []
+
     for c in data.get("comments", []):
-        if c.get("commentType") == "INTERACTION":
+        ctype = c.get("commentType")
+        if ctype == "INTERACTION":
             for interaction in c.get("interactions", []):
                 partner_obj = interaction.get("interactantTwo") or {}
                 partner_gene = partner_obj.get("geneName", "")
@@ -203,11 +239,48 @@ def _uniprot_features_sync(uniprot_id: str) -> "ProteinFeatures":
                         interaction_type="binary",
                         evidence=interaction.get("interactionType", ""),
                     ))
+        elif ctype == "FUNCTION":
+            for t in c.get("texts", []) or []:
+                val = (t.get("value") or "").strip()
+                # Skip "(Microbial infection)" prefixed entries — those
+                # describe viral hijack contexts, not the protein's own role.
+                if not val or val.startswith("(Microbial infection)"):
+                    continue
+                function_parts.append(val)
+        elif ctype == "PATHWAY":
+            for t in c.get("texts", []) or []:
+                val = (t.get("value") or "").strip()
+                if val:
+                    pathway_parts.append(val)
+        elif ctype == "SUBUNIT":
+            for t in c.get("texts", []) or []:
+                val = (t.get("value") or "").strip()
+                if val:
+                    subunit_parts.append(val)
+        elif ctype == "DISEASE":
+            disease = c.get("disease") or {}
+            disease_id = (disease.get("diseaseId") or "").strip()
+            acronym = (disease.get("acronym") or "").strip()
+            desc = (disease.get("description") or "").strip()
+            header_bits = [b for b in (disease_id, f"({acronym})" if acronym else "") if b]
+            header = " ".join(header_bits)
+            piece = f"{header}: {desc}" if header and desc else (header or desc)
+            if piece:
+                disease_parts.append(piece)
+
+    function_text = _clean_comment_text(" ".join(function_parts), max_chars=500)
+    pathway_text = _clean_comment_text(" ".join(pathway_parts), max_chars=500)
+    subunit_text = _clean_comment_text(" ".join(subunit_parts), max_chars=500)
+    disease_text = _clean_comment_text(" ".join(disease_parts), max_chars=500)
 
     return ProteinFeatures(
         uniprot_id=acc, sequence=seq, length=int(length or 0),
         domains=domains, ptm_sites=ptm_sites, ppi=ppi, pockets=pockets,
         mavedb_scores=[],  # MaveDB is a separate API; not fetched in fallback
+        function_text=function_text,
+        pathway_text=pathway_text,
+        subunit_text=subunit_text,
+        disease_text=disease_text,
     )
 
 

@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Amit Shenoy"
 __license__ = "GPL-3.0"
 
@@ -28,7 +28,17 @@ class RetrievedChunk(BaseModel):
     text: str = Field(description="Full text of the chunk as stored in the index.")
     gene: str = Field(description="HGNC gene symbol (e.g. 'BRCA1').")
     uniprot_id: str = Field(description="UniProt accession (e.g. 'P38398').")
-    chunk_type: Literal["domain", "variant_cluster", "protein_summary"] = Field(
+    chunk_type: Literal[
+        "domain",
+        "variant_cluster",
+        "protein_summary",
+        # Added in v0.1.1 — UniProt comment-derived biology chunks.
+        # Additive extension; pre-existing types are unchanged.
+        "function",
+        "pathway",
+        "subunit",
+        "disease",
+    ] = Field(
         description="Granularity of the chunk."
     )
     residue_range: str = Field(

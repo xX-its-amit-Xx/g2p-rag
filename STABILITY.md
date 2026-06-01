@@ -50,3 +50,11 @@ Fields guaranteed stable in 0.x:
 
 Future versions may add optional fields (e.g. `confidence`, `pmid_citations`).
 Existing fields will not be removed or renamed in 0.x.
+
+## Changelog
+
+- **v0.1.1** — `RetrievedChunk.chunk_type` Literal extended with
+  `function`, `pathway`, `subunit`, `disease` (UniProt comment-derived
+  biology chunks). Additive only — the original three values
+  (`domain`, `variant_cluster`, `protein_summary`) are unchanged, so
+  consumers matching on those keep working without modification.

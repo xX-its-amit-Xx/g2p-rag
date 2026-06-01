@@ -429,6 +429,64 @@ class ProteinChunker:
         return chunk
 
     # ------------------------------------------------------------------
+    # UniProt comment-derived biology chunks (function / pathway /
+    # subunit / disease). Each emits at most one chunk per protein; we
+    # return None when the upstream text is empty so chunk_gene can
+    # drop it without producing a stub entry.
+    # ------------------------------------------------------------------
+
+    def _comment_chunk(
+        self,
+        structure: GeneStructureMap,
+        text: str,
+        chunk_type: str,
+        category_label: str,
+    ) -> "Chunk | None":
+        """Build one protein-level Chunk for a UniProt comment-derived field."""
+        if not text:
+            return None
+        body = (
+            f"Gene: {structure.gene_symbol} | UniProt: {structure.uniprot_id}\n"
+            f"{category_label}\n"
+            f"\n"
+            f"{text}"
+        )
+        chunk = Chunk(
+            text=body,
+            chunk_type=chunk_type,
+            gene=structure.gene_symbol,
+            uniprot_id=structure.uniprot_id,
+            residue_start=0,
+            residue_end=0,
+        )
+        log.debug(
+            f"{chunk_type}_chunk created",
+            gene=structure.gene_symbol,
+            uniprot_id=structure.uniprot_id,
+        )
+        return chunk
+
+    def function_chunk(self, structure: GeneStructureMap) -> "Chunk | None":
+        """Emit the FUNCTION chunk for this protein, or None when absent."""
+        text = getattr(structure.features, "function_text", "") or ""
+        return self._comment_chunk(structure, text, "function", "FUNCTION")
+
+    def pathway_chunk(self, structure: GeneStructureMap) -> "Chunk | None":
+        """Emit the PATHWAY chunk for this protein, or None when absent."""
+        text = getattr(structure.features, "pathway_text", "") or ""
+        return self._comment_chunk(structure, text, "pathway", "PATHWAY")
+
+    def subunit_chunk(self, structure: GeneStructureMap) -> "Chunk | None":
+        """Emit the SUBUNIT chunk for this protein, or None when absent."""
+        text = getattr(structure.features, "subunit_text", "") or ""
+        return self._comment_chunk(structure, text, "subunit", "SUBUNIT")
+
+    def disease_chunk(self, structure: GeneStructureMap) -> "Chunk | None":
+        """Emit the DISEASE chunk for this protein, or None when absent."""
+        text = getattr(structure.features, "disease_text", "") or ""
+        return self._comment_chunk(structure, text, "disease", "DISEASE")
+
+    # ------------------------------------------------------------------
     # Combined entry point
     # ------------------------------------------------------------------
 
@@ -437,18 +495,27 @@ class ProteinChunker:
         structure: GeneStructureMap,
         variants: list[ClinVarVariant],
     ) -> list[Chunk]:
-        """Return all chunks for a single gene: domains + variant clusters + summary."""
+        """Return all chunks for a single gene: domains + variant clusters + summary + biology."""
         d_chunks = self.domain_chunks(structure)
         v_chunks = self.variant_cluster_chunks(
             structure.gene_symbol, structure.uniprot_id, variants
         )
         summary = self.protein_summary_chunk(structure, variants)
-        all_chunks = d_chunks + v_chunks + [summary]
+        biology_chunks = [
+            c for c in (
+                self.function_chunk(structure),
+                self.pathway_chunk(structure),
+                self.subunit_chunk(structure),
+                self.disease_chunk(structure),
+            ) if c is not None
+        ]
+        all_chunks = d_chunks + v_chunks + [summary] + biology_chunks
         log.info(
             "gene chunked",
             gene=structure.gene_symbol,
             n_domain=len(d_chunks),
             n_variant_cluster=len(v_chunks),
+            n_biology=len(biology_chunks),
             total=len(all_chunks),
         )
         return all_chunks
