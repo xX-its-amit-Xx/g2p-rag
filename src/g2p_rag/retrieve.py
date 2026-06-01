@@ -69,18 +69,26 @@ class VectorStore:
         self,
         persist_dir: Path,
         collection_name: str = "g2p_proteins",
+        embedding_model_name: str | None = None,
     ) -> None:
         """Initialise a persistent ChromaDB client and get-or-create the collection.
 
         Args:
             persist_dir: Directory on disk where ChromaDB persists its data.
             collection_name: Name of the ChromaDB collection.
+            embedding_model_name: Optional embedding model identifier to persist
+                as collection metadata at creation time.  Has no effect on an
+                already-existing collection (chromadb's get_or_create does not
+                overwrite metadata).
         """
         persist_dir.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(persist_dir))
+        creation_metadata: dict[str, Any] = {"hnsw:space": "cosine"}
+        if embedding_model_name:
+            creation_metadata["embedding_model"] = embedding_model_name
         self._col = self._client.get_or_create_collection(
             collection_name,
-            metadata={"hnsw:space": "cosine"},
+            metadata=creation_metadata,
         )
         log.info(
             "vector_store.ready",
@@ -410,7 +418,11 @@ def build_index(
     if embedder is None:
         embedder = get_embedder()
 
-    vs = VectorStore(persist_dir=persist_dir, collection_name=collection_name)
+    vs = VectorStore(
+        persist_dir=persist_dir,
+        collection_name=collection_name,
+        embedding_model_name=embedder.model_name,
+    )
     vs.ingest(chunks, embedder)
 
     bm25 = BM25Index()
@@ -422,6 +434,16 @@ def build_index(
 
 class CollectionEmptyError(RuntimeError):
     """Raised when the ChromaDB collection has no documents."""
+
+
+class EmbeddingModelMismatchError(RuntimeError):
+    """Raised when a retriever is loaded with a different embedding model than was
+    used to build the underlying ChromaDB collection.
+
+    Mixing embedding models silently produces nonsense similarity scores because
+    the dense vectors live in incompatible spaces, so this error fails loudly at
+    retriever load time rather than at query time.
+    """
 
 
 def load_embedder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2") -> EmbeddingModel:
@@ -475,6 +497,26 @@ def load_retriever(
         raise CollectionEmptyError(
             f"Collection '{collection_name}' in {persist_dir} is empty. "
             "Run `g2p-rag ingest` first."
+        )
+
+    # Verify the embedding model matches the one used to build the index.
+    # Mixing models silently corrupts dense retrieval, so we fail loudly when we
+    # can detect a mismatch.  Collections built before this metadata was
+    # persisted will lack the key — log a warning but proceed for back-compat.
+    stored_model = (vs._col.metadata or {}).get("embedding_model")
+    if stored_model is None:
+        log.warning(
+            "load_retriever.embedding_model_metadata_missing",
+            collection=collection_name,
+            requested_model=embedder.model_name,
+            hint=(
+                "Index was built before embedding-model metadata was persisted; "
+                "cannot verify consistency. Rebuild the index to enable the check."
+            ),
+        )
+    elif stored_model != embedder.model_name:
+        raise EmbeddingModelMismatchError(
+            f"Index built with {stored_model!r} but query uses {embedder.model_name!r}"
         )
 
     bm25 = BM25Index()

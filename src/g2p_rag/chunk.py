@@ -75,12 +75,25 @@ def _pocket_ids_in_range(pockets: list, start: int, end: int) -> list[str]:
 
 
 def _clin_sig_distribution(variants: list[ClinVarVariant]) -> str:
-    """Return a human-readable clinical significance distribution string."""
+    """Return a human-readable clinical significance distribution string.
+
+    Variants whose clinical_significance is None / empty are NOT bucketed
+    into a fabricated "Unknown" category — they are counted separately and
+    surfaced via an explicit "missing_clinsig_n: K" field so downstream
+    consumers don't mistake absent annotation for a real ClinVar label.
+    """
     counts: dict[str, int] = {}
+    missing = 0
     for v in variants:
-        sig = v.clinical_significance or "Unknown"
+        sig = v.clinical_significance
+        if not sig:
+            missing += 1
+            continue
         counts[sig] = counts.get(sig, 0) + 1
-    return ", ".join(f"{sig}: {cnt}" for sig, cnt in sorted(counts.items()))
+    parts = [f"{sig}: {cnt}" for sig, cnt in sorted(counts.items())]
+    if missing:
+        parts.append(f"missing_clinsig_n: {missing}")
+    return ", ".join(parts)
 
 
 def _extract_position(variant: ClinVarVariant) -> int:

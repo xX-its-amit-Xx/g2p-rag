@@ -1,30 +1,25 @@
 """
-Cookbook: BRAF V600E vs IDH1 R132H — The "G2P-Druggable Hot-Spot" Signal
+Cookbook: BRAF V600E vs IDH1 R132H -- G2P-Druggable Hot-Spot Signal
+(citation-disciplined rewrite)
 
 Drug-discovery question:
-  Both BRAF and IDH1 harbor a single-residue oncogenic hot-spot that turned
-  into a blockbuster small-molecule franchise (vemurafenib/dabrafenib/
-  encorafenib on BRAF V600; ivosidenib/vorasidenib on IDH1 R132). If we only
+  Both BRAF and IDH1 harbor a single-residue oncogenic hot-spot. If we only
   had the G2P knowledge graph at hand, which combination of chunk-level
-  signals would have flagged these residues as druggable hot-spots BEFORE the
-  drugs were approved?
+  signals would have flagged these residues as druggable hot-spots?
 
 Hypothesis (tested below):
   A residue is a G2P-druggable hot-spot when these chunks co-occur on the
   same gene:
-    (a) variant_cluster with pathogenic burden piled up at one residue
-        (the "variant pile-up" signal),
+    (a) variant_cluster with pathogenic burden piled up at one residue,
     (b) domain or protein_summary chunk that places the residue inside a
-        catalytic/binding fold (the "structural anchor" signal),
-    (c) disease + function chunks naming a focused oncogenic mechanism
-        (the "mechanistic-rationale" signal that draws medicinal chemistry).
+        catalytic/binding fold,
+    (c) function/disease chunks that together name a focused mechanism.
 
-We fan out across 5 chunk types per gene (protein_summary, domain,
-variant_cluster, function, disease) using the public G2PRetriever, then
-print a side-by-side BRAF | IDH1 comparison and a synthesis section a
-target-triage team can scan in <30 seconds. The g2p-rag v0.11 ingest does
-not include structures / cross_references chunks for these genes, so the
-script focuses on the chunks that ARE in the index.
+This rewrite enforces RAG citation discipline via ``_citation.py``:
+every printed factual line is either wrapped in ``Cited(text, chunk)`` so the
+chunk text actually contains evidence for the claim, or wrapped in
+``Cited(text, None, label="TEXTBOOK_CONTEXT")`` and clearly framed as
+background -- never as a RAG-derived insight.
 """
 
 from __future__ import annotations
@@ -40,6 +35,8 @@ from pathlib import Path
 from typing import Iterable
 
 from g2p_rag import G2PRetriever, RetrievedChunk
+
+from _citation import Cited, assert_supported, find_in_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -62,13 +59,8 @@ def _load_env() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Curated queries — one per (gene, chunk_type) pair
+# Curated queries -- one per (gene, chunk_type) pair
 # ---------------------------------------------------------------------------
-#
-# These queries were tuned against the v0.11 ChromaDB index. Each query is
-# chosen to put the target chunk_type in the top-k. Hybrid retrieval can
-# still drift to adjacent types, so the helper below over-fetches and
-# post-filters by (gene, chunk_type).
 
 QUERIES_BY_GENE: dict[str, dict[str, str]] = {
     "BRAF": {
@@ -76,8 +68,6 @@ QUERIES_BY_GENE: dict[str, dict[str, str]] = {
             "BRAF protein summary canonical sequence domains",
         "domain":
             "BRAF kinase domain catalytic activation segment serine threonine",
-        # Tuned to surface the 556-607 cluster that holds Val600Glu; the
-        # ultra-specific 'V600E melanoma' phrasing pushes other clusters up.
         "variant_cluster":
             "BRAF pathogenic missense Val600 activation loop hotspot variants",
         "function":
@@ -88,8 +78,6 @@ QUERIES_BY_GENE: dict[str, dict[str, str]] = {
     "IDH1": {
         "protein_summary":
             "IDH1 protein summary canonical sequence PTM sites",
-        # IDH1 has no domain chunk in the v0.11 ingest; we ask anyway so the
-        # synthesis can flag the absence as a missing signal.
         "domain":
             "IDH1 isocitrate dehydrogenase NADP catalytic domain",
         "variant_cluster":
@@ -131,8 +119,7 @@ def _retrieve_cluster_containing(
     k: int = 50,
 ) -> RetrievedChunk | None:
     """Return the highest-scoring variant_cluster whose span CONTAINS the target
-    residue. Hybrid retrieval is noisy across many small clusters, so we
-    over-fetch and pick the one that actually covers the hot-spot."""
+    residue. Over-fetch and pick the one that actually covers the hot-spot."""
     results = retriever.retrieve(query, k=k, gene_filter=[gene])
     best: RetrievedChunk | None = None
     for r in results:
@@ -145,7 +132,6 @@ def _retrieve_cluster_containing(
 
 
 def _short(text: str, n: int = 320) -> str:
-    """Collapse whitespace and truncate for terminal display."""
     text = " ".join(text.split())
     return text if len(text) <= n else text[: n - 3] + "..."
 
@@ -166,14 +152,11 @@ def _print_chunk(rc: RetrievedChunk | None, label: str) -> None:
 # Synthesis helpers
 # ---------------------------------------------------------------------------
 
-# Ground truth for the verdict only — the script always PRINTS what was
-# actually retrieved; these constants drive the comparison labels.
+# Hot-spot residue numbers drive the structural-anchor / pile-up math; the
+# labels are purely cosmetic. These are NOT RAG facts -- they parameterize
+# the lookup. No drug names, approval dates, or disease names are hard-coded.
 HOTSPOT_RESIDUE_NUM = {"BRAF": 600, "IDH1": 132}
 HOTSPOT_RESIDUE_LABEL = {"BRAF": "V600", "IDH1": "R132"}
-APPROVED_DRUGS = {
-    "BRAF": ["vemurafenib", "dabrafenib", "encorafenib"],
-    "IDH1": ["ivosidenib", "vorasidenib"],
-}
 
 
 def _span_contains(residue_range: str, n: int) -> bool:
@@ -186,11 +169,7 @@ def _span_contains(residue_range: str, n: int) -> bool:
 
 
 def _count_pathogenic(cluster_text: str) -> int:
-    """Count 'Pathogenic' (incl. 'Pathogenic/Likely pathogenic') variants in
-    a variant_cluster chunk's text."""
-    # Each variant line in the chunk template includes a clinical-significance
-    # parenthetical; we count occurrences of the word 'Pathogenic' on those
-    # lines (case-sensitive, matching the chunk template).
+    """Count 'Pathogenic' lines in a variant_cluster chunk's text."""
     return sum(1 for line in cluster_text.splitlines() if "Pathogenic" in line)
 
 
@@ -225,9 +204,6 @@ def main() -> None:
         for ctype in CHUNK_TYPES:
             query = QUERIES_BY_GENE[gene][ctype]
             if ctype == "variant_cluster":
-                # Hot-spot-aware selection: over-fetch variant_clusters and pick
-                # the highest-scoring one whose residue span covers the hot-spot.
-                # Falls back to the plain top-1 if none cover the hot-spot.
                 rc = _retrieve_cluster_containing(
                     retriever, gene, query,
                     target_residue=HOTSPOT_RESIDUE_NUM[gene],
@@ -239,6 +215,12 @@ def main() -> None:
                 rc = _retrieve_by_type(retriever, gene, ctype, query, k=15)
             collected[gene][ctype] = rc
             _print_chunk(rc, f"[{ctype}]")
+
+    # Flatten all retrieved chunks per gene for the citation helper.
+    chunks_by_gene: dict[str, list[RetrievedChunk]] = {
+        g: [c for c in collected[g].values() if c is not None]
+        for g in ("BRAF", "IDH1")
+    }
 
     # ------------------------------------------------------------------
     # Per-gene structural anchor check
@@ -258,7 +240,6 @@ def main() -> None:
                 f"domain chunk {d.residue_range}"
             )
         else:
-            # Fall back to protein_summary, which lists all annotated domains.
             anchor = ps.text if ps else ""
             print(
                 f"  {gene}: no domain chunk in index; protein_summary lists -> "
@@ -291,10 +272,10 @@ def main() -> None:
         )
 
     # ------------------------------------------------------------------
-    # Side-by-side comparison table
+    # Side-by-side comparison table -- ONLY columns derivable from chunks
     # ------------------------------------------------------------------
     print("\n" + "=" * 72)
-    print("## Side-by-side comparison")
+    print("## Side-by-side comparison (chunk-derived columns only)")
     print("=" * 72)
 
     def _cell_domain(g: str) -> str:
@@ -309,31 +290,16 @@ def main() -> None:
         vc = collected[g].get("variant_cluster")
         return str(_count_pathogenic(vc.text)) if vc else "n/a"
 
-    def _cell_function(g: str) -> str:
-        fn = collected[g].get("function")
-        if not fn:
-            return "n/a"
-        # First 100 chars of the function text after the header.
-        body = re.sub(r"^Gene:.*?FUNCTION\s*", "", fn.text, flags=re.S)
-        return _short(body, 90)
-
-    def _cell_disease(g: str) -> str:
-        ds = collected[g].get("disease")
-        if not ds:
-            return "n/a"
-        body = re.sub(r"^Gene:.*?DISEASE\s*", "", ds.text, flags=re.S)
-        # Pull the first disease name (chunk template begins with 'Name (ABBR):').
-        m = re.match(r"([A-Za-z0-9 ,'-]+?)\s*(?:\([^)]+\))?:", body)
-        return m.group(1) if m else _short(body, 90)
+    def _cell_chunks_retrieved(g: str) -> str:
+        # Compute from len(chunks) rather than hard-coding "5".
+        return str(len(chunks_by_gene[g]))
 
     rows = [
-        ("Hot-spot residue",                lambda g: HOTSPOT_RESIDUE_LABEL[g]),
-        ("Approved drug franchise",         lambda g: ", ".join(APPROVED_DRUGS[g])),
-        ("Domain chunk span",               _cell_domain),
-        ("Variant-cluster span",            _cell_cluster),
-        ("Pathogenic variants in cluster",  _cell_path_count),
-        ("Function chunk (excerpt)",        _cell_function),
-        ("Primary disease",                 _cell_disease),
+        ("Hot-spot residue (queried)",       lambda g: HOTSPOT_RESIDUE_LABEL[g]),
+        ("Chunks retrieved (len)",           _cell_chunks_retrieved),
+        ("Domain chunk span",                _cell_domain),
+        ("Variant-cluster span",             _cell_cluster),
+        ("Pathogenic variants in cluster",   _cell_path_count),
     ]
 
     label_w = 34
@@ -346,7 +312,7 @@ def main() -> None:
         print(f"{label:<{label_w}}  {braf_cell:<{col_w}}  {idh1_cell:<{col_w}}")
 
     # ------------------------------------------------------------------
-    # Synthesis
+    # Synthesis -- citation-gated
     # ------------------------------------------------------------------
     print("\n" + "=" * 72)
     print("## Synthesis -- does the 3-signal hot-spot rule hold?")
@@ -369,8 +335,6 @@ def main() -> None:
                  or f"Val{hot_n}" in vc.text)
             and _count_pathogenic(vc.text) >= 2
         )
-        # Structural anchor: a domain chunk that contains the residue, or a
-        # protein_summary that lists domains and at least implies coverage.
         anchored_in_domain = (
             d is not None and _span_contains(d.residue_range, hot_n)
         )
@@ -379,8 +343,6 @@ def main() -> None:
         )
         signal_b = anchored_in_domain or anchored_in_summary
 
-        # Mechanistic rationale: function chunk names the catalytic activity
-        # AND a disease chunk lists a cancer indication.
         function_ok = fn is not None and any(
             kw in fn.text.lower()
             for kw in ("kinase", "phosphor", "isocitrate", "decarboxylation")
@@ -408,33 +370,197 @@ def main() -> None:
               f"(function={'ok' if function_ok else 'miss'}, "
               f"disease={'ok' if disease_ok else 'miss'})")
 
+        # --------------------------------------------------------------
+        # Citation-gated per-gene evidence lines.
+        # Every Cited(...) below either points at a chunk whose text we
+        # already verified contains a supporting substring (via
+        # assert_supported), or is explicitly TEXTBOOK_CONTEXT.
+        # --------------------------------------------------------------
+        print(f"\n  {gene} chunk-grounded evidence:")
+
+        chunks = chunks_by_gene[gene]
+
+        if signal_a and vc is not None:
+            # Anchor the pile-up sentence to the variant_cluster chunk we
+            # actually retrieved. NB: chunk bodies use en-dash for ranges, so
+            # hint on residue *tokens* and "Pathogenic", which the chunk
+            # template always emits.
+            hint_alts = [
+                f"Arg{hot_n}",
+                f"Val{hot_n}",
+                hot_label,
+                "Pathogenic",
+            ]
+            ev = assert_supported(
+                f"{gene}: pathogenic variants pile up around residue {hot_label}",
+                [vc],
+                hints=hint_alts,
+            )
+            n_path = _count_pathogenic(vc.text)
+            print("    " + str(Cited(
+                f"variant_cluster {vc.residue_range} carries "
+                f"{n_path} 'Pathogenic'-tagged entries covering {hot_label}",
+                ev,
+            )))
+
+        if anchored_in_domain and d is not None:
+            # Chunk body uses en-dashes in residue ranges (e.g. "457–717"),
+            # but `residue_range` metadata uses ASCII hyphen. Hint on tokens
+            # the chunk body actually contains: 'Domain' header + start
+            # residue number.
+            start_str = d.residue_range.split("-")[0] if d.residue_range else ""
+            ev = assert_supported(
+                f"{gene}: hot-spot residue {hot_label} sits inside domain {d.residue_range}",
+                [d],
+                hints=[f"Residues: {start_str}", "Domain", "domain"],
+            )
+            print("    " + str(Cited(
+                f"domain chunk {d.residue_range} contains residue {hot_n}",
+                ev,
+            )))
+        elif anchored_in_summary and ps is not None:
+            ev = assert_supported(
+                f"{gene}: protein_summary lists domain annotations",
+                [ps],
+                hints=["Domain", "domain"],
+            )
+            print("    " + str(Cited(
+                f"protein_summary enumerates domain annotations (no separate "
+                f"domain chunk indexed for {gene})",
+                ev,
+            )))
+
+        if function_ok and fn is not None:
+            # Find the actual keyword that fired so we cite truthfully.
+            hint = next(
+                kw for kw in ("kinase", "phosphor", "isocitrate", "decarboxylation")
+                if kw in fn.text.lower()
+            )
+            ev = assert_supported(
+                f"{gene}: function chunk names a catalytic activity",
+                [fn],
+                hints=[hint],
+            )
+            print("    " + str(Cited(
+                f"function chunk references '{hint}' activity",
+                ev,
+            )))
+
+        if disease_ok and ds is not None:
+            hint = next(
+                kw for kw in ("melanoma", "carcinoma", "cancer", "glioma", "leukemia")
+                if kw in ds.text.lower()
+            )
+            ev = assert_supported(
+                f"{gene}: disease chunk names a cancer indication",
+                [ds],
+                hints=[hint],
+            )
+            print("    " + str(Cited(
+                f"disease chunk references '{hint}'",
+                ev,
+            )))
+
+        # If a known-druggable franchise is something the reader expects to see
+        # spelled out, mark it as TEXTBOOK_CONTEXT -- NOT a RAG conclusion.
+        # We do NOT name specific drugs here because no chunk we retrieved
+        # contains drug names; that knowledge is out-of-index.
+        print("    " + str(Cited(
+            f"Background: oncogenic hot-spots at a single residue have, "
+            f"historically, attracted small-molecule programs; whether any "
+            f"specific drug exists for {gene} {hot_label} is OUT OF THIS INDEX.",
+            None,
+            label="TEXTBOOK_CONTEXT",
+        )))
+
+    # ------------------------------------------------------------------
+    # Conclusion -- chunk-grounded only, no overreach
+    # ------------------------------------------------------------------
     print("\n" + "-" * 72)
-    print("Conclusion:")
+    print("Conclusion (chunk-grounded):")
+
+    # Pull the BRAF domain and IDH1 protein_summary chunks (if present) so we
+    # can re-cite their actual residue spans in the conclusion. NO disease
+    # names, NO drug names, NO "NADP-binding fold" claim are made unless a
+    # chunk literally contains them.
+    braf_chunks = chunks_by_gene["BRAF"]
+    idh1_chunks = chunks_by_gene["IDH1"]
+
+    # BRAF kinase-domain span -- only print if a chunk supports it.
+    # Chunk bodies use en-dash separators, so hint on the start-residue
+    # token plus the "Domain" header that the chunk template always emits.
+    braf_domain = collected["BRAF"].get("domain")
+    if braf_domain is not None and _span_contains(
+        braf_domain.residue_range, HOTSPOT_RESIDUE_NUM["BRAF"]
+    ):
+        start_str = braf_domain.residue_range.split("-")[0]
+        ev = assert_supported(
+            "BRAF V600 sits inside the retrieved domain chunk span",
+            [braf_domain],
+            hints=[f"Residues: {start_str}", "Domain"],
+        )
+        print("  " + str(Cited(
+            f"BRAF V600 lies within the domain chunk span "
+            f"{braf_domain.residue_range}",
+            ev,
+        )))
+
+    braf_cluster = collected["BRAF"].get("variant_cluster")
+    if braf_cluster is not None and _span_contains(
+        braf_cluster.residue_range, HOTSPOT_RESIDUE_NUM["BRAF"]
+    ):
+        start_str = braf_cluster.residue_range.split("-")[0]
+        ev = assert_supported(
+            "BRAF V600 falls inside a retrieved variant_cluster span",
+            [braf_cluster],
+            hints=[f"Variant cluster: {start_str}", "Pathogenic"],
+        )
+        print("  " + str(Cited(
+            f"BRAF V600 falls inside variant_cluster {braf_cluster.residue_range}",
+            ev,
+        )))
+
+    idh1_cluster = collected["IDH1"].get("variant_cluster")
+    if idh1_cluster is not None and _span_contains(
+        idh1_cluster.residue_range, HOTSPOT_RESIDUE_NUM["IDH1"]
+    ):
+        start_str = idh1_cluster.residue_range.split("-")[0]
+        ev = assert_supported(
+            "IDH1 R132 falls inside a retrieved variant_cluster span",
+            [idh1_cluster],
+            hints=[f"Variant cluster: {start_str}", "Pathogenic"],
+        )
+        print("  " + str(Cited(
+            f"IDH1 R132 falls inside variant_cluster {idh1_cluster.residue_range}",
+            ev,
+        )))
+
+    # IDH1 NADP-binding fold: ONLY print if a chunk literally contains "NADP".
+    idh1_nadp_evidence = find_in_chunks("NADP", idh1_chunks)
+    if idh1_nadp_evidence is not None:
+        print("  " + str(Cited(
+            "IDH1 chunks reference NADP cofactor / cofactor-binding context",
+            idh1_nadp_evidence,
+        )))
+    # If no chunk says "NADP", the sentence is silently dropped -- per the
+    # rewrite contract, we do NOT paper over the gap with training knowledge.
+
     print(
-        "  The G2P-druggable-hotspot signal is a simple chunk-level conjunction:\n"
-        "  variant_cluster pile-up on a single residue (>=2 'Pathogenic' tags)\n"
-        "  + a structural anchor from a domain or protein_summary chunk that\n"
-        "  contains that residue + a mechanistic rationale built from the\n"
-        "  function chunk (names the catalytic activity) and the disease chunk\n"
-        "  (names a cancer indication).\n"
-        "\n"
-        "  BRAF V600 (inside the 457-717 protein-kinase domain, dense 556-607\n"
-        "  variant cluster, MAPK/kinase function, melanoma/CRC/thyroid disease)\n"
-        "  satisfies all three. IDH1 R132 satisfies all three even WITHOUT a\n"
-        "  domain chunk in the index, because the protein_summary chunk lists\n"
-        "  the NADP-binding fold and the 132-132 cluster is unambiguously\n"
-        "  pathogenic.\n"
-        "\n"
-        "  Forward use: re-run this template across the v0.11 ingest (CYP21A2,\n"
-        "  BMPR2, SERPING1, PIGA, EGFR, PCSK9, MC4R, PIK3CA, ERBB2, TP53...)\n"
-        "  and flag any gene where the same three chunk-level signals co-occur\n"
-        "  on a single residue. Those are the next candidate hot-spots to put\n"
-        "  in front of medicinal chemistry."
+        "\n  Method recap (no external facts asserted):\n"
+        "    The G2P-druggable-hotspot signal is a chunk-level conjunction:\n"
+        "      (a) variant_cluster pile-up containing the residue (>=2 'Pathogenic'),\n"
+        "      (b) a domain or protein_summary chunk whose span covers the residue,\n"
+        "      (c) function + disease chunks that name a catalytic activity and an\n"
+        "          oncology context.\n"
+        "    Whether either gene's hot-spot has an approved drug, and which\n"
+        "    cancer types are affected, are claims that must be sourced from\n"
+        "    outside this RAG index. This script intentionally does not assert\n"
+        "    them."
     )
     print("-" * 72)
 
     # ------------------------------------------------------------------
-    # Footer summary
+    # Footer summary -- counts come from len() of actual retrieval state
     # ------------------------------------------------------------------
     total = sum(1 for g in collected for ct in collected[g] if collected[g][ct])
     types_seen = sorted({
@@ -443,7 +569,8 @@ def main() -> None:
     print(
         f"\nSummary: retrieved {total} chunks across {len(types_seen)} "
         f"distinct chunk types ({', '.join(types_seen)}) "
-        f"for 2 genes (BRAF, IDH1)."
+        f"for {len(collected)} genes "
+        f"(BRAF={len(chunks_by_gene['BRAF'])}, IDH1={len(chunks_by_gene['IDH1'])})."
     )
 
 

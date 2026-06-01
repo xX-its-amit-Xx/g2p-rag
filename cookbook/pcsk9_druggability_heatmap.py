@@ -1,25 +1,21 @@
 """
-Cookbook: PCSK9 Druggability Heatmap — Variant Burden x Domain Coverage x
-          Existing Drug Class (BRCA1-style synthesis on a v0.11-indexed gene)
+Cookbook: PCSK9 Druggability Heatmap — chunk-grounded synthesis
 
 Drug-discovery question:
     Where in PCSK9 do ClinVar-curated variants cluster, what protein-level
     features (domains, oligomerization, function) overlap those clusters,
-    and which therapeutic modality already exploits each region? PCSK9 has
-    three commercially distinct drug classes (anti-PCSK9 monoclonal antibodies
-    evolocumab/alirocumab, the siRNA inclisiran, and emerging oral macrocycles
-    such as MK-0616) — each engages a different part of the protein. This
-    cookbook composes SIX g2p-rag chunk types (domain, variant_cluster,
-    protein_summary, function, subunit, disease) over a single gene to
-    produce a residue-resolved druggability heatmap that explains why
-    LDLR-binding-surface antibodies and mRNA knockdown succeeded, while the
-    Inhibitor-I9 prodomain pocket remains an open small-molecule target.
+    and what does the indexed evidence say about therapeutic engagement?
+    This cookbook composes g2p-rag chunk types (domain, variant_cluster,
+    protein_summary, function, subunit, disease) over a single gene and
+    enforces strict citation discipline: every printed factual sentence
+    either points at a retrieved chunk that contains the supporting
+    substring (Cited(text, chunk)) or is explicitly tagged
+    TEXTBOOK_CONTEXT with source=None and the [NO_RAG_SOURCE] marker.
 
-    NOTE: BRCA1 is NOT in the v0.11 reingest list. The brief explicitly said
-    to swap to an indexed gene if BRCA1 was absent; PCSK9 carries the full
+    NOTE: BRCA1 is NOT in the v0.11 reingest list. PCSK9 carries the full
     chunk-type complement (domain + variant_cluster + protein_summary +
-    function + subunit + disease) and a well-mapped drug landscape, making
-    it the right stand-in for the BRCA1-style druggability synthesis.
+    function + subunit + disease) and is used as the stand-in for the
+    BRCA1-style druggability synthesis.
 """
 
 from __future__ import annotations
@@ -35,6 +31,9 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 # Allow running directly from the cookbook/ directory without installing.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _citation import Cited, assert_supported, find_in_chunks  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -74,13 +73,7 @@ def _parse_range(residue_range: str) -> tuple[int, int] | None:
 
 
 def _count_pathogenic_in_text(chunk_text: str) -> tuple[int, int, int]:
-    """Return (pathogenic, likely_pathogenic, vus) counts from a variant_cluster blob.
-
-    The variant_cluster chunks list one variant per line with its ClinVar
-    classification in parentheses, e.g. ``p.Arg46Leu (Pathogenic) []``.
-    We use a tolerant substring count so the demo does not break on
-    whitespace or formatting drift.
-    """
+    """Return (pathogenic, likely_pathogenic, vus) counts from a variant_cluster blob."""
     text_lower = chunk_text.lower()
     n_path = text_lower.count("(pathogenic)")
     n_likely = text_lower.count("(likely pathogenic)")
@@ -128,18 +121,18 @@ def main() -> None:
     _load_env()
 
     print("\n" + "=" * 70)
-    print("PCSK9 Druggability Heatmap Cookbook")
+    print("PCSK9 Druggability Heatmap Cookbook (citation-disciplined)")
     print("=" * 70)
     print(
-        "\nQuestion: For PCSK9 - hypercholesterolemia driver and target of three\n"
-        "distinct approved/late-stage modalities (mAbs, siRNA, oral macrocycles) -\n"
-        "which residue ranges carry the variant burden, which protein domains\n"
-        "overlap those ranges, and what drug class engages each region? Compose\n"
-        "six g2p-rag chunk types over a SINGLE gene to answer.\n"
+        "\nQuestion: For PCSK9, which residue ranges carry the ClinVar variant\n"
+        "burden, which protein domains overlap those ranges, and what does\n"
+        "the indexed chunk evidence say? Each printed factual sentence is\n"
+        "either Cited(text, chunk) (grounded) or Cited(text, None,\n"
+        "label='TEXTBOOK_CONTEXT') (framing, no RAG support).\n"
     )
 
     # ------------------------------------------------------------------
-    # 1. Load the retriever (lazy - index loads on first .retrieve())
+    # 1. Load the retriever
     # ------------------------------------------------------------------
     from g2p_rag import G2PRetriever
 
@@ -151,11 +144,11 @@ def main() -> None:
         collection_name="g2p_proteins",
     )
 
-    # Aggregator: chunk_type -> list of RetrievedChunk (single-gene scope)
     buckets: dict = defaultdict(list)
+    all_chunks: list = []
 
     # ------------------------------------------------------------------
-    # 2. protein_summary - establish PCSK9 / UniProt Q8NBP7 / 692 aa
+    # 2. protein_summary
     # ------------------------------------------------------------------
     print("\n## Protein-level orientation")
 
@@ -166,9 +159,10 @@ def main() -> None:
     )
     _print_chunks("protein_summary + nearby chunks", summary)
     _bucket(buckets, summary)
+    all_chunks.extend(summary)
 
     # ------------------------------------------------------------------
-    # 3. function + subunit - mechanism + oligomeric state
+    # 3. function + subunit
     # ------------------------------------------------------------------
     print("\n## Mechanism: function + subunit")
 
@@ -179,6 +173,7 @@ def main() -> None:
     )
     _print_chunks("function chunks (mechanism of action)", fn_chunks)
     _bucket(buckets, fn_chunks)
+    all_chunks.extend(fn_chunks)
 
     su_chunks = retriever.retrieve(
         "PCSK9 subunit oligomeric state monomer dimer self-association",
@@ -187,9 +182,10 @@ def main() -> None:
     )
     _print_chunks("subunit chunks (oligomeric state)", su_chunks)
     _bucket(buckets, su_chunks)
+    all_chunks.extend(su_chunks)
 
     # ------------------------------------------------------------------
-    # 4. domain - structural features (Inhibitor I9 prodomain + Peptidase S8)
+    # 4. domain
     # ------------------------------------------------------------------
     print("\n## Structural features: domain")
 
@@ -200,23 +196,25 @@ def main() -> None:
     )
     _print_chunks("domain chunks (Inhibitor I9, Peptidase S8, ...)", dom_chunks)
     _bucket(buckets, dom_chunks)
+    all_chunks.extend(dom_chunks)
 
     # ------------------------------------------------------------------
-    # 5. variant_cluster - residue-resolved ClinVar burden
+    # 5. variant_cluster
     # ------------------------------------------------------------------
     print("\n## Variant burden: variant_cluster (ClinVar-curated)")
 
     var_chunks = retriever.retrieve(
         "PCSK9 pathogenic missense gain-of-function variant cluster familial "
-        "hypercholesterolemia D374Y catalytic prodomain",
+        "hypercholesterolemia catalytic prodomain",
         k=8,
         gene_filter=["PCSK9"],
     )
     _print_chunks("variant_cluster chunks", var_chunks)
     _bucket(buckets, var_chunks)
+    all_chunks.extend(var_chunks)
 
     # ------------------------------------------------------------------
-    # 6. disease - the indication (FHCL3)
+    # 6. disease
     # ------------------------------------------------------------------
     print("\n## Indication: disease")
 
@@ -228,6 +226,7 @@ def main() -> None:
     )
     _print_chunks("disease chunks", dis_chunks)
     _bucket(buckets, dis_chunks)
+    all_chunks.extend(dis_chunks)
 
     # ------------------------------------------------------------------
     # 7. Chunk-type coverage report
@@ -240,8 +239,6 @@ def main() -> None:
     print(f"  Total chunks pulled: {total_chunks}")
     print("  Per chunk_type counts:")
     for ct in chunk_types_seen:
-        # Deduplicate by (residue_range, first 80 chars of text); the same
-        # chunk can be returned by multiple queries.
         seen = set()
         unique_chunks = []
         for c in buckets[ct]:
@@ -254,164 +251,262 @@ def main() -> None:
         print(f"    {ct:<18}  n={len(unique_chunks)}  (unique)")
 
     # ------------------------------------------------------------------
-    # 8. Build the druggability heatmap by joining domains x variants
+    # 8. Build the heatmap rows from indexed evidence only
     # ------------------------------------------------------------------
-    print("\n\n## Druggability heatmap (domain x variant_cluster x drug class)")
+    print("\n\n## Domain x variant_cluster overlap (from chunks)")
     print("-" * 70)
 
-    # Drug-class annotations indexed by approximate residue range. These are
-    # taken from the published literature on PCSK9 inhibitors and are stored
-    # here as fixed editorial knowledge - the cookbook's purpose is to JOIN
-    # g2p-rag retrieval (left columns) to the drug landscape (right column),
-    # not to recover the drug landscape itself from the index.
-    drug_landscape: list[tuple[tuple[int, int], str, str]] = [
-        (
-            (31, 152),
-            "Prodomain (Inhibitor I9)",
-            "Open pocket; small-molecule starting points (DC371739-like), "
-            "macrocycle MK-0616 binds adjacent surface.",
-        ),
-        (
-            (153, 421),
-            "Catalytic Peptidase S8",
-            "Antibodies (evolocumab DB09303, alirocumab DB09302) bind near "
-            "the LDLR-binding patch on this lobe; catalytic site is "
-            "AUTOCATALYTICALLY inactivated post-cleavage (not a drug target).",
-        ),
-        (
-            (422, 692),
-            "C-terminal His-rich / CHRD",
-            "Inclisiran (DB14901, siRNA) does not bind protein - it knocks "
-            "down PCSK9 mRNA, eliminating ALL domains including this region; "
-            "no direct small-molecule program here.",
-        ),
-    ]
-
-    # Header
-    print(
-        f"  {'Residue range':<14} | {'Domain (g2p-rag)':<32} | "
-        f"{'Path / LikelyPath / VUS':<25} | Drug-class engagement"
-    )
-    print("  " + "-" * 110)
-
-    # Build a quick lookup: residue range -> domain label from the index
-    domain_rows: list[tuple[tuple[int, int], str]] = []
+    # Domain rows: residue range + label, parsed straight from chunk text.
+    domain_rows: list[tuple[tuple[int, int], str, "object"]] = []
     for dc in buckets.get("domain", []):
         rng = _parse_range(dc.residue_range)
         if rng is None:
             continue
-        # Pull the domain name out of the chunk text (first 'Domain: ...' line)
         label = "(unnamed)"
         for line in dc.text.splitlines():
             line = line.strip()
             if line.lower().startswith("domain:"):
                 label = line.split(":", 1)[1].strip()
                 break
-        domain_rows.append((rng, label))
+        domain_rows.append((rng, label, dc))
 
-    # Pre-aggregate variant burden per region
+    # Variant burden per residue range, from chunk text only.
     variant_burden_by_range: dict[tuple[int, int], tuple[int, int, int]] = {}
+    variant_chunk_by_range: dict[tuple[int, int], object] = {}
     for vc in buckets.get("variant_cluster", []):
         rng = _parse_range(vc.residue_range)
         if rng is None:
             continue
         variant_burden_by_range[rng] = _count_pathogenic_in_text(vc.text)
+        variant_chunk_by_range[rng] = vc
 
-    # Render one row per published drug-landscape window, joining indexed data
-    for (lo, hi), drug_region_label, drug_note in drug_landscape:
-        # Find the domain chunk that most overlaps this window
-        matched_domain = "(no indexed domain)"
-        for (drng, dlabel) in domain_rows:
-            if _overlap((lo, hi), drng):
-                matched_domain = f"{dlabel} [{drng[0]}-{drng[1]}]"
-                break
+    # Header
+    print(
+        f"  {'Domain (residues)':<40} | "
+        f"{'Path / LikelyPath / VUS in overlap':<36} | Overlapping variant ranges"
+    )
+    print("  " + "-" * 110)
 
-        # Sum variant burden across all variant_cluster chunks overlapping window
+    for (drng, dlabel, _dchunk) in domain_rows:
         n_path = n_likely = n_vus = 0
+        overlapping = []
         for vrng, (p, lp, vus) in variant_burden_by_range.items():
-            if _overlap((lo, hi), vrng):
+            if _overlap(drng, vrng):
                 n_path += p
                 n_likely += lp
                 n_vus += vus
-
+                overlapping.append(f"{vrng[0]}-{vrng[1]}")
         burden_cell = f"{n_path} / {n_likely} / {n_vus}"
-        # Region label drawn from editorial drug map; domain label from g2p-rag.
-        region_cell = f"{lo}-{hi} ({drug_region_label})"
-        print(
-            f"  {region_cell[:14]:<14} | {matched_domain[:32]:<32} | "
-            f"{burden_cell:<25} | {drug_note}"
-        )
+        dom_cell = f"{dlabel} [{drng[0]}-{drng[1]}]"
+        ov_cell = ", ".join(overlapping) if overlapping else "(none)"
+        print(f"  {dom_cell[:40]:<40} | {burden_cell:<36} | {ov_cell}")
 
     # ------------------------------------------------------------------
-    # 9. Synthesis paragraph - tie ALL chunk types together
+    # 9. Citation-disciplined synthesis
     # ------------------------------------------------------------------
-    print("\n\n## Synthesis")
+    print("\n\n## Synthesis (citation-disciplined)")
     print("-" * 70)
 
-    # Pull representative cluster IDs and counts for the prose
+    claims: list[Cited] = []
+
+    # --- (1) protein_summary anchor: PCSK9 gene / canonical sequence ---
+    summary_evidence = assert_supported(
+        "PCSK9 has an indexed protein summary",
+        buckets.get("protein_summary", []) + summary,
+        hints=["PCSK9", "proprotein convertase"],
+    )
+    claims.append(
+        Cited(
+            "1. protein_summary anchors PCSK9 as the indexed gene "
+            "(coordinate system for the residue ranges used below).",
+            summary_evidence,
+        )
+    )
+
+    # --- (2) function: LDLR binding + lysosomal degradation ---
+    ldlr_evidence = find_in_chunks("LDLR", buckets.get("function", []))
+    if ldlr_evidence is None:
+        ldlr_evidence = find_in_chunks(
+            "low-density lipoprotein receptor", buckets.get("function", [])
+        )
+    if ldlr_evidence is None:
+        ldlr_evidence = find_in_chunks(
+            "low density lipoprotein receptor", buckets.get("function", [])
+        )
+    if ldlr_evidence is not None:
+        claims.append(
+            Cited(
+                "2. function chunks describe PCSK9 binding to the LDL receptor.",
+                ldlr_evidence,
+            )
+        )
+    else:
+        claims.append(
+            Cited(
+                "2. function chunks for PCSK9 did not surface an LDLR-binding "
+                "string; mechanism statement is framing only.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
+
+    # Lysosomal-degradation sub-claim: only printed if a chunk actually says it.
+    lyso_evidence = find_in_chunks("lysosom", buckets.get("function", []))
+    if lyso_evidence is None:
+        lyso_evidence = find_in_chunks("degradation", buckets.get("function", []))
+    if lyso_evidence is not None:
+        claims.append(
+            Cited(
+                "   PCSK9 routes bound receptor toward lysosomal degradation "
+                "(per indexed function chunk).",
+                lyso_evidence,
+            )
+        )
+
+    # --- (3) subunit: oligomeric state, only if chunks say something ---
+    subunit_chunks = buckets.get("subunit", [])
+    subunit_evidence = None
+    for hint in ("monomer", "oligomer", "self-association", "dimer", "subunit"):
+        subunit_evidence = find_in_chunks(hint, subunit_chunks)
+        if subunit_evidence is not None:
+            break
+    if subunit_evidence is not None:
+        claims.append(
+            Cited(
+                "3. subunit chunks describe the oligomeric-state evidence indexed "
+                "for PCSK9 (used verbatim, no extrapolation to drug-dose modeling).",
+                subunit_evidence,
+            )
+        )
+    else:
+        claims.append(
+            Cited(
+                "3. subunit chunks did not surface an oligomeric-state string; "
+                "no subunit conclusion stated.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
+
+    # --- (4) domain: enumerate exactly what the chunks named ---
+    if domain_rows:
+        # Use the highest-scoring domain chunk as the citation.
+        best_dom_chunk = domain_rows[0][2]
+        domain_str = "; ".join(
+            f"{lbl} [{r[0]}-{r[1]}]" for (r, lbl, _c) in domain_rows
+        )
+        claims.append(
+            Cited(
+                f"4. domain chunks resolve: {domain_str}. (Names and ranges "
+                "taken verbatim from indexed domain chunks; no inference about "
+                "which domain holds which surface patch.)",
+                best_dom_chunk,
+            )
+        )
+    else:
+        claims.append(
+            Cited(
+                "4. No domain chunks were retrieved.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
+
+    # --- (5) variant_cluster: residue ranges + counts ---
     cluster_lines = []
+    cluster_evidence = None
     for vrng in sorted(variant_burden_by_range.keys()):
         p, lp, vus = variant_burden_by_range[vrng]
         cluster_lines.append(
             f"{vrng[0]}-{vrng[1]} (P={p}, LP={lp}, VUS={vus})"
         )
-    cluster_summary = "; ".join(cluster_lines) if cluster_lines else "(none)"
+        if cluster_evidence is None:
+            cluster_evidence = variant_chunk_by_range[vrng]
+    if cluster_evidence is not None:
+        cluster_summary = "; ".join(cluster_lines)
+        claims.append(
+            Cited(
+                f"5. variant_cluster chunks give residue-resolved ClinVar burden: "
+                f"{cluster_summary}.",
+                cluster_evidence,
+            )
+        )
 
-    domain_summary = "; ".join(
-        f"{lbl} [{r[0]}-{r[1]}]" for (r, lbl) in domain_rows
-    ) or "(none)"
+        # Optional: domain x variant overlap, only as observed in the chunks.
+        overlap_observed = False
+        for (drng, dlabel, dchunk) in domain_rows:
+            for vrng in variant_burden_by_range:
+                if _overlap(drng, vrng):
+                    overlap_observed = True
+                    claims.append(
+                        Cited(
+                            f"   Overlap observed: domain {dlabel} [{drng[0]}-{drng[1]}] "
+                            f"overlaps variant_cluster [{vrng[0]}-{vrng[1]}].",
+                            dchunk,
+                        )
+                    )
+                    break
+            if overlap_observed:
+                break
+    else:
+        claims.append(
+            Cited(
+                "5. No variant_cluster chunks with parseable residue ranges.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
 
-    print(
-        "1. protein_summary chunks anchor PCSK9 as UniProt Q8NBP7, 692 aa,\n"
-        "   establishing the residue coordinate system used throughout.\n"
-        "\n"
-        "2. function chunks describe the mechanism: secreted PCSK9 binds the\n"
-        "   EGF-A repeat of LDLR on the hepatocyte surface and routes the\n"
-        "   LDLR/LDL complex to lysosomal degradation - so PCSK9 raises serum\n"
-        "   LDL by REMOVING the receptor that clears it. Critically, although\n"
-        "   PCSK9 has a subtilisin Peptidase S8 domain, its catalytic activity\n"
-        "   is only used ONCE (intramolecular autocleavage to release the I9\n"
-        "   prodomain); thereafter the active site is occluded by the\n"
-        "   non-covalently associated prodomain - so the catalytic triad is\n"
-        "   NOT druggable for LDL lowering.\n"
-        "\n"
-        "3. subunit chunks indicate PCSK9 is predominantly monomeric with\n"
-        "   capacity to self-associate; this matters for siRNA dose\n"
-        "   modeling (inclisiran) because protein-level oligomerization is\n"
-        "   not a knockdown bottleneck.\n"
-        "\n"
-        f"4. domain chunks resolve two structural compartments: {domain_summary}.\n"
-        "   The Inhibitor I9 prodomain (77-149) remains stably associated\n"
-        "   post-autocleavage and forms the surface against which oral\n"
-        "   macrocycles such as Merck's MK-0616 are designed. The Peptidase\n"
-        "   S8 catalytic domain (155-461) carries the LDLR-binding patch\n"
-        "   on its outer surface - the epitope targeted by evolocumab and\n"
-        "   alirocumab antibodies.\n"
-        "\n"
-        f"5. variant_cluster chunks give residue-resolved ClinVar burden:\n"
-        f"   {cluster_summary}. The dominant pathogenic cluster sits inside\n"
-        "   the Peptidase S8 / LDLR-binding region, which is exactly the\n"
-        "   functionally relevant surface - gain-of-function FH-causing\n"
-        "   variants (e.g. p.Asp374Tyr) cluster on the LDLR-binding face,\n"
-        "   independently validating the antibody epitope chosen by\n"
-        "   evolocumab and alirocumab.\n"
-        "\n"
-        "6. disease chunks fix the indication: familial hypercholesterolemia\n"
-        "   type 3 (FHCL3), autosomal dominant, elevated LDL, xanthomas,\n"
-        "   premature coronary disease - the same population in which the\n"
-        "   PCSK9-inhibitor outcome trials (FOURIER, ODYSSEY OUTCOMES,\n"
-        "   ORION-10/11) established cardiovascular benefit.\n"
-        "\n"
-        "CONCLUSION: g2p-rag's chunk composition produces a residue-resolved\n"
-        "druggability map of PCSK9 where each modality engages a distinct\n"
-        "compartment - antibodies on the Peptidase S8 LDLR-binding face (where\n"
-        "the GoF variant burden also concentrates), siRNA (inclisiran) at the\n"
-        "transcript level (modality-agnostic to domain), and oral macrocycles\n"
-        "(MK-0616 class) on the Inhibitor I9 prodomain. The synthesis pattern\n"
-        "demonstrated here - domain + variant_cluster + protein_summary +\n"
-        "function + subunit + disease - is the same one the BRCA1 brief\n"
-        "called for, transplanted onto a v0.11-indexed gene."
+    # --- (6) disease: indication, only what the chunk literally says ---
+    disease_chunks = buckets.get("disease", [])
+    disease_evidence = None
+    for hint in (
+        "hypercholesterolemia",
+        "familial hypercholesterolemia",
+        "FHCL3",
+        "LDL",
+    ):
+        disease_evidence = find_in_chunks(hint, disease_chunks)
+        if disease_evidence is not None:
+            break
+    if disease_evidence is not None:
+        # Print the chunk's own residue_range / disease label as the claim
+        # body, not a textbook gloss.
+        disease_label = "indication chunk present"
+        for line in disease_evidence.text.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("disease:"):
+                disease_label = stripped
+                break
+        claims.append(
+            Cited(
+                f"6. disease chunk indexed for PCSK9: '{disease_label}'.",
+                disease_evidence,
+            )
+        )
+    else:
+        claims.append(
+            Cited(
+                "6. No disease chunk for PCSK9 matched the searched indication hints.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
+
+    # --- (7) framing closer: explicitly marked TEXTBOOK_CONTEXT ---
+    claims.append(
+        Cited(
+            "Framing: PCSK9 is clinically engaged by multiple therapeutic "
+            "modalities in the literature; this script only reports which "
+            "chunks the index returned for each chunk_type, not editorial "
+            "drug-class conclusions.",
+            source=None,
+            label="TEXTBOOK_CONTEXT",
+        )
     )
+
+    for c in claims:
+        print(str(c))
 
     print("\n" + "=" * 70)
     print("End of cookbook.")

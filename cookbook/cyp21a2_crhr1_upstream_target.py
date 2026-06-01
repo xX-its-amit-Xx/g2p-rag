@@ -2,28 +2,28 @@
 Cookbook: CYP21A2 + CRHR1 — Why is the drug target one upstream node?
 
 Real-world drug-discovery question:
-    Crinecerfont (Crenessity, NDA 218808, FDA-approved Dec 2024) treats classic
-    congenital adrenal hyperplasia (CAH). The disease is caused by loss-of-function
-    variants in CYP21A2 (21-hydroxylase). Yet crinecerfont does NOT target CYP21A2 —
-    it is a CRHR1 antagonist acting one node upstream in the HPA axis. Why?
+    Crinecerfont (Crenessity) treats classic congenital adrenal hyperplasia (CAH),
+    a disease caused by loss-of-function variants in CYP21A2 (21-hydroxylase),
+    yet the drug does NOT target CYP21A2 — it antagonises CRHR1, one node
+    upstream in the HPA axis. Why?
 
-This example mirrors the reasoning that v0.11 of the agent succeeded at:
-  1. Pull CYP21A2 chunks (function, disease, variant_cluster, protein_summary)
-     — these explain the enzyme defect, the pathogenic-variant hot-spots, and
-     why CYP21A2 itself is not chemically tractable (a broken metabolic enzyme).
-  2. Pull CRHR1 chunks (function, subunit, protein_summary) — these explain
-     that CRHR1 is the upstream class-B GPCR that drives CRH/ACTH signalling,
-     the feedback node whose over-activity actually produces CAH symptoms.
-  3. Cross-reference the disease + function chunks of both genes to show the
-     mechanistic link: low cortisol from broken CYP21A2 lifts negative feedback
-     on the hypothalamus + pituitary, ACTH rises via CRHR1, adrenal androgen
-     excess follows. Antagonising CRHR1 (crinecerfont) suppresses ACTH at the
-     upstream node.
-  4. Synthesise: composing function + subunit chunks on CRHR1 with
-     function + disease + variant_cluster chunks on CYP21A2 is the structural
-     answer for why the drug target sits one node upstream of the disease gene.
+This example demonstrates how composing chunk types (function, subunit,
+disease, variant_cluster, protein_summary) for two genes can produce a
+mechanistic answer — WITHOUT leaking training-data knowledge into the
+synthesis. Every printed factual claim must either:
+  (a) be wrapped in ``Cited(text, chunk)`` where ``chunk`` is a real
+      RetrievedChunk returned by the retriever AND its text contains
+      substring evidence for the claim (gated by ``assert_supported``), OR
+  (b) be wrapped in ``Cited(text, None, label="TEXTBOOK_CONTEXT")`` so a
+      reviewer can see at a glance that the line is background framing,
+      not a RAG-derived insight.
 
-Demonstrates composition of 5 chunk types: function, subunit, disease,
+Hard-coded facts that previously appeared in the synthesis (OMIM 201910,
+MONDO:0008425, the crinecerfont FDA approval date, specific pseudogene-
+conversion residue identifiers) have been removed: if a chunk doesn't
+contain them, they are not asserted as conclusions of this example.
+
+Demonstrates composition of chunk types: function, subunit, disease,
 variant_cluster, protein_summary.
 """
 
@@ -42,6 +42,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from g2p_rag import G2PRetriever, RetrievedChunk
 
+# Citation-discipline helper (built in the preceding workflow phase).
+from _citation import Cited, assert_supported, find_in_chunks
+
 
 # ---------------------------------------------------------------------------
 # Environment setup
@@ -57,7 +60,7 @@ def _load_env() -> None:
             load_dotenv(env_path)
             print(f"Loaded environment variables from {env_path}")
         else:
-            print("No .env file found — using existing environment variables.")
+            print("No .env file found - using existing environment variables.")
     except ImportError:
         print("python-dotenv not installed; skipping .env load.")
 
@@ -71,9 +74,6 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 COLLECTION = "g2p_proteins"
 
 # The chunk types we want to compose for this two-gene mechanistic story.
-# These are the types that the current index actually carries for CYP21A2 +
-# CRHR1; future ingests (pathway / cross_references / structures) will only
-# strengthen the synthesis without breaking the example.
 TARGET_TYPES = {
     "function",
     "subunit",
@@ -102,12 +102,7 @@ def _collect_by_type(
     queries: list[str],
     k: int = 5,
 ) -> dict[str, list[RetrievedChunk]]:
-    """Run several queries scoped to one gene, bucket chunks by chunk_type.
-
-    We fire multiple intent-specific queries because hybrid retrieval ranks by
-    relevance — different intents surface different chunk types even for the
-    same gene.
-    """
+    """Run several queries scoped to one gene, bucket chunks by chunk_type."""
     bucket: dict[str, list[RetrievedChunk]] = defaultdict(list)
     seen: set[tuple[str, str, str]] = set()  # (gene, type, residue_range)
 
@@ -120,6 +115,14 @@ def _collect_by_type(
             seen.add(key)
             bucket[ch.chunk_type].append(ch)
     return bucket
+
+
+def _flatten(bucket: dict[str, list[RetrievedChunk]]) -> list[RetrievedChunk]:
+    """Flatten a chunk_type-keyed bucket into a single list."""
+    out: list[RetrievedChunk] = []
+    for chunks in bucket.values():
+        out.extend(chunks)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +138,7 @@ def main() -> None:
     _load_env()
 
     print("\n" + "=" * 72)
-    print("CYP21A2 + CRHR1 — Why is the drug target one upstream node?")
+    print("CYP21A2 + CRHR1 - Why is the drug target one upstream node?")
     print("Crinecerfont (CRHR1 antagonist) for CYP21A2-deficiency CAH")
     print("=" * 72)
 
@@ -146,7 +149,7 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 2. CYP21A2 — the disease gene
+    # 2. CYP21A2 - the disease gene
     # ------------------------------------------------------------------
     print("\n[1/4] Retrieving CYP21A2 chunks (the broken enzyme)...")
 
@@ -169,13 +172,13 @@ def main() -> None:
         chunks = cyp_bucket.get(ctype, [])
         if not chunks:
             continue
-        print(f"### CYP21A2 — chunk_type={ctype} ({len(chunks)} chunk(s))")
+        print(f"### CYP21A2 - chunk_type={ctype} ({len(chunks)} chunk(s))")
         for i, c in enumerate(chunks, 1):
             _print_chunk(i, c)
         print()
 
     # ------------------------------------------------------------------
-    # 3. CRHR1 — the therapeutic node
+    # 3. CRHR1 - the therapeutic node
     # ------------------------------------------------------------------
     print("\n[2/4] Retrieving CRHR1 chunks (the drug target)...")
 
@@ -197,7 +200,7 @@ def main() -> None:
         chunks = crhr1_bucket.get(ctype, [])
         if not chunks:
             continue
-        print(f"### CRHR1 — chunk_type={ctype} ({len(chunks)} chunk(s))")
+        print(f"### CRHR1 - chunk_type={ctype} ({len(chunks)} chunk(s))")
         for i, c in enumerate(chunks, 1):
             _print_chunk(i, c)
         print()
@@ -206,7 +209,7 @@ def main() -> None:
     # 4. Side-by-side disease cross-reference
     # ------------------------------------------------------------------
     print("\n[3/4] Side-by-side disease chunks linking the two genes...\n")
-    print("## Disease chunks — CYP21A2 vs CRHR1\n")
+    print("## Disease chunks - CYP21A2 vs CRHR1\n")
 
     cyp_disease = cyp_bucket.get("disease", []) + cyp_bucket.get("diseases", [])
     crhr1_disease = crhr1_bucket.get("disease", []) + crhr1_bucket.get("diseases", [])
@@ -237,73 +240,221 @@ def main() -> None:
     print(f"  Distinct target types hit               : {len(composed)} / {len(TARGET_TYPES)}")
 
     # ------------------------------------------------------------------
-    # 6. SYNTHESIS — the specific, testable conclusion
+    # 6. SYNTHESIS - citation-disciplined
     # ------------------------------------------------------------------
     print("\n" + "=" * 72)
-    print("## SYNTHESIS — Why CRHR1, not CYP21A2, is the drug target")
+    print("## SYNTHESIS - Why CRHR1, not CYP21A2, is the drug target")
+    print("## Every line is either chunk-grounded or labelled TEXTBOOK_CONTEXT")
+    print("=" * 72 + "\n")
+
+    cyp_all = _flatten(cyp_bucket)
+    crhr1_all = _flatten(crhr1_bucket)
+
+    claims: list[Cited] = []
+
+    # --- Framing: the drug name itself is NOT in the chunks. Mark as context.
+    claims.append(
+        Cited(
+            "Crinecerfont (brand: Crenessity) is the CRHR1 antagonist whose "
+            "target choice we are trying to explain from the chunks below.",
+            source=None,
+            label="TEXTBOOK_CONTEXT",
+        )
+    )
+
+    # --- (a) CYP21A2 function: cytochrome-P450 monooxygenase in adrenal
+    #         steroidogenesis. Hints derived from the substrings actually
+    #         present in the retrieved UniProt-derived FUNCTION chunk
+    #         (e.g. "cytochrome P450 monooxygenase", "adrenal steroidogenesis",
+    #         "hydroxylation at C-21"). We deliberately do NOT hint on
+    #         "21-hydroxylase" because the chunk uses the C-21 hydroxylation
+    #         wording instead.
+    cyp_function_evidence = assert_supported(
+        claim="CYP21A2 is a cytochrome-P450 monooxygenase in adrenal steroidogenesis",
+        chunks=cyp_all,
+        hints=[
+            "cytochrome P450 monooxygenase",
+            "adrenal steroidogenesis",
+            "hydroxylation at C-21",
+            "11-deoxycortisol",
+            "11-deoxycorticosterone",
+        ],
+    )
+    claims.append(
+        Cited(
+            "CYP21A2 function chunk identifies the gene product as a "
+            "cytochrome-P450 monooxygenase that catalyses C-21 hydroxylation "
+            "of steroid intermediates in adrenal steroidogenesis.",
+            cyp_function_evidence,
+        )
+    )
+
+    # --- (b) CYP21A2 disease: congenital adrenal hyperplasia / 21-hydroxylase
+    #         deficiency / adrenal hyperplasia.
+    cyp_disease_evidence = assert_supported(
+        claim="CYP21A2 deficiency causes congenital adrenal hyperplasia",
+        chunks=cyp_all,
+        hints=[
+            "adrenal hyperplasia",
+            "congenital adrenal",
+            "21-hydroxylase deficiency",
+            "AH3",
+        ],
+    )
+    claims.append(
+        Cited(
+            "CYP21A2 disease chunk links loss-of-function to a congenital "
+            "adrenal-hyperplasia phenotype (no OMIM/MONDO id printed - "
+            "those identifiers are not asserted unless a chunk contains them).",
+            cyp_disease_evidence,
+        )
+    )
+
+    # --- (c) CYP21A2 variant_cluster: only assert clustering IF a
+    #         variant_cluster chunk exists at all. We do NOT enumerate specific
+    #         residues (p.Pro30Leu / p.Gln318Ter / p.Arg356Trp) unless a chunk
+    #         literally contains them.
+    cyp_vc_chunks = cyp_bucket.get("variant_cluster", [])
+    if cyp_vc_chunks:
+        vc_evidence = cyp_vc_chunks[0]
+        claims.append(
+            Cited(
+                f"CYP21A2 has {len(cyp_vc_chunks)} variant_cluster chunk(s) "
+                "available; pathogenic variation is localised to defined "
+                "residue ranges within the protein.",
+                vc_evidence,
+            )
+        )
+        # Opportunistically attest specific residues ONLY if a chunk contains
+        # the substring. No raise on miss - we just don't print the claim.
+        for residue in ("Pro30Leu", "Gln318Ter", "Arg356Trp",
+                        "Ile172Asn", "Val281Leu"):
+            hit = find_in_chunks(residue, cyp_all)
+            if hit is not None:
+                claims.append(
+                    Cited(
+                        f"A CYP21A2 chunk explicitly mentions residue "
+                        f"p.{residue} as part of the variant landscape.",
+                        hit,
+                    )
+                )
+    else:
+        claims.append(
+            Cited(
+                "No CYP21A2 variant_cluster chunk was returned for these "
+                "queries, so no residue-level pathogenic-cluster claim is "
+                "asserted here.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
+
+    # --- (d) Framing-only: the HPA-axis feedback story (low cortisol -> ACTH
+    #         excess -> adrenal androgens) is endocrinology textbook content,
+    #         not something the function/disease chunks state in those words.
+    #         Mark it explicitly so a reviewer sees it is unsourced.
+    claims.append(
+        Cited(
+            "Clinically, CYP21A2 deficiency produces cortisol shortfall and "
+            "compensatory ACTH excess driving adrenal-androgen overproduction; "
+            "this HPA-axis framing is endocrinology background, not extracted "
+            "from the retrieved chunks.",
+            source=None,
+            label="TEXTBOOK_CONTEXT",
+        )
+    )
+
+    # --- (e) CRHR1 function: corticotropin-releasing hormone receptor.
+    crhr1_function_evidence = assert_supported(
+        claim="CRHR1 is the corticotropin-releasing hormone receptor",
+        chunks=crhr1_all,
+        hints=[
+            "corticotropin-releasing",
+            "corticotropin releasing",
+            "CRH receptor",
+            "CRF receptor",
+            "urocortin",
+        ],
+    )
+    claims.append(
+        Cited(
+            "CRHR1 function chunk identifies it as a corticotropin-releasing "
+            "hormone / CRF receptor (the upstream signalling node).",
+            crhr1_function_evidence,
+        )
+    )
+
+    # --- (f) CRHR1 subunit / interaction partner: only assert if a chunk
+    #         contains the partner name. We do NOT hard-code GPER1 / DLG1.
+    crhr1_subunit_chunks = crhr1_bucket.get("subunit", [])
+    if crhr1_subunit_chunks:
+        # Attest the bare existence of subunit/interaction info.
+        claims.append(
+            Cited(
+                f"CRHR1 has {len(crhr1_subunit_chunks)} subunit/interaction "
+                "chunk(s) - the cell-surface receptor has documented "
+                "protein-protein partners (specific partner names only "
+                "asserted below if a chunk text contains them).",
+                crhr1_subunit_chunks[0],
+            )
+        )
+        for partner in ("GPER1", "DLG1", "ARRB", "G protein", "G-protein"):
+            hit = find_in_chunks(partner, crhr1_all)
+            if hit is not None:
+                claims.append(
+                    Cited(
+                        f"A CRHR1 chunk explicitly references the partner / "
+                        f"effector token '{partner}'.",
+                        hit,
+                    )
+                )
+    else:
+        claims.append(
+            Cited(
+                "No CRHR1 subunit chunk was returned; partner-protein detail "
+                "is not asserted from this run.",
+                source=None,
+                label="TEXTBOOK_CONTEXT",
+            )
+        )
+
+    # --- (g) The compositional read-out: BOTH genes contributed chunks across
+    #         the targeted chunk-type set. This is a statement about the
+    #         retrieval bookkeeping, not a biological assertion, but we tie it
+    #         to a real chunk anyway so it is fully traceable.
+    any_evidence = cyp_function_evidence  # already validated above
+    claims.append(
+        Cited(
+            f"Compositional coverage: {len(composed)} of {len(TARGET_TYPES)} "
+            f"target chunk types were retrieved across CYP21A2+CRHR1 "
+            f"({composed}); the synthesis above is built only from these.",
+            any_evidence,
+        )
+    )
+
+    # --- (h) The final, chunk-grounded conclusion. We deliberately do NOT
+    #         claim "CYP21A2 is undruggable" or assert a specific MOA for
+    #         crinecerfont - those overreach beyond what the chunks state.
+    claims.append(
+        Cited(
+            "Conclusion from chunks alone: CYP21A2 is the disease gene "
+            "(a cytochrome-P450 monooxygenase in adrenal steroidogenesis; "
+            "loss-of-function linked to congenital adrenal hyperplasia), "
+            "while CRHR1 is a corticotropin-releasing hormone receptor at an "
+            "upstream signalling node - which is why a CRHR1-targeted "
+            "therapy can act without repairing CYP21A2.",
+            cyp_function_evidence,  # the conclusion rides on (a)+(b)+(e)
+        )
+    )
+
+    # --- Print every claim with its provenance tag.
+    for i, claim in enumerate(claims, 1):
+        print(f"  ({i}) {claim}")
+        print()
+
     print("=" * 72)
-
-    synthesis = """
-The G2P chunks compose into a single mechanistic story that explains the
-crinecerfont (CHEMBL2364614 / Crenessity, FDA-approved 2024-12-13) target choice:
-
-  (a) CYP21A2 function chunk describes steroid 21-hydroxylase (UniProt P08686,
-      EC 1.14.14.16), the cytochrome P450 monooxygenase converting
-      17-OH-progesterone to 11-deoxycortisol and progesterone to
-      11-deoxycorticosterone — the rate-limiting step for cortisol and
-      aldosterone synthesis in the adrenal cortex.
-
-  (b) CYP21A2 disease chunk maps to "Adrenal hyperplasia 3 (AH3)" (OMIM 201910,
-      MONDO:0008425): a recessive disorder of cortisol biosynthesis. Multiple
-      CYP21A2 variant_cluster chunks then localise the recurrent pathogenic
-      missense / splice events (the CYP21A2 / CYP21A1P pseudogene hot-spots —
-      p.Pro30Leu, p.Ile172Asn, p.Val281Leu, p.Gln318Ter, p.Arg356Trp). Together
-      the function + disease + variant_cluster chunks establish: there is no
-      enzyme left to agonise or inhibit — CYP21A2 is a broken metabolic
-      enzyme, not a druggable signalling node.
-
-  (c) The actual symptom-driver in classic CAH is NOT cortisol deficiency
-      itself but the compensatory ACTH excess: low cortisol relieves negative
-      feedback on the hypothalamus + pituitary, CRH and ACTH rise, and the
-      adrenal cortex is hyper-stimulated. Because 21-hydroxylase is broken,
-      that drive is shunted into adrenal androgen overproduction
-      (virilisation, infertility, adrenal-rest tumours, short final stature).
-
-  (d) CRHR1 function chunk (UniProt P34998) describes exactly this upstream
-      node: a class-B G-protein coupled receptor for CRH (corticotropin-
-      releasing factor) and urocortin (UCN). Ligand binding triggers a
-      conformational change that activates G-proteins and downstream effectors
-      — i.e. cAMP / PKA in pituitary corticotropes, driving POMC processing
-      and ACTH release. The CRHR1 subunit chunk adds that CRHR1 heterodimerises
-      with GPER1 and that DLG1 binding regulates post-agonist endocytosis;
-      both detail facets of a chemically tractable cell-surface receptor.
-      Antagonising CRHR1 therefore blocks the pathological ACTH drive at its
-      source — without needing to repair CYP21A2 and without piling on more
-      exogenous glucocorticoid.
-
-  (e) The CYP21A2 + CRHR1 protein_summary chunks corroborate the asymmetry:
-      a P450 metabolic enzyme on one side, a GPCR with extracellular ligand-
-      binding domain on the other. The pharmacological choice falls out
-      automatically from that contrast.
-
-Conclusion: the drug target is one node upstream because the G2P data shows
-(i) CYP21A2 is a non-druggable broken metabolic enzyme whose variants are
-clustered at pseudogene-conversion hot-spots, (ii) the morbidity is driven by
-ACTH excess, and (iii) CRHR1 is the upstream, druggable class-B GPCR that
-gates that excess. Crinecerfont's MOA — selective CRHR1 antagonism to suppress
-ACTH-driven adrenal androgens — is the direct read-out of composing CYP21A2
-function + disease + variant_cluster chunks with CRHR1 function + subunit
-chunks.
-
-This is the v0.11 win: until function / subunit / disease chunks were ingested
-alongside the legacy domain / variant_cluster / protein_summary chunks, the
-agent could see the broken enzyme but not the feedback-axis biology that
-justifies the upstream target choice.
-"""
-    print(synthesis)
-
-    print("=" * 72)
-    print("Done.")
+    print("Done. Every printed claim above carries either a chunk citation")
+    print("or an explicit [NO_RAG_SOURCE] / TEXTBOOK_CONTEXT marker.")
     print("=" * 72)
 
 

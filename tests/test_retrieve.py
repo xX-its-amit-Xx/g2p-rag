@@ -15,6 +15,8 @@ from g2p_rag.retrieve import (
     HybridRetriever,
     SearchResult,
     CollectionEmptyError,
+    EmbeddingModelMismatchError,
+    build_index,
     load_retriever,
 )
 
@@ -249,3 +251,78 @@ def test_load_retriever_raises_on_empty_dir(tmp_path: Path) -> None:
     empty_dir.mkdir()
     with pytest.raises(CollectionEmptyError):
         load_retriever(empty_dir, embedder=FakeEmbedder())
+
+
+# ---------------------------------------------------------------------------
+# Embedding-model consistency
+# ---------------------------------------------------------------------------
+
+
+class OtherFakeEmbedder:
+    """A second deterministic embedder with a different model_name."""
+
+    model_name = "other-fake"
+    dim = 4
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        np.random.seed(7)
+        return np.random.rand(len(texts), 4).astype(np.float32)
+
+    def embed_query(self, text: str) -> np.ndarray:
+        np.random.seed(1)
+        return np.random.rand(4).astype(np.float32)
+
+
+def test_build_index_persists_embedding_model_metadata(
+    tmp_path: Path, sample_chunks: list[Chunk]
+) -> None:
+    """build_index() must record embedder.model_name in the collection metadata."""
+    persist_dir = tmp_path / "chroma_meta"
+    build_index(sample_chunks, persist_dir=persist_dir, embedder=FakeEmbedder())
+
+    import chromadb
+
+    client = chromadb.PersistentClient(path=str(persist_dir))
+    col = client.get_collection("g2p_proteins")
+    assert (col.metadata or {}).get("embedding_model") == "fake"
+
+
+def test_load_retriever_raises_on_embedding_model_mismatch(
+    tmp_path: Path, sample_chunks: list[Chunk]
+) -> None:
+    """Loading a retriever with a different embedder than was used to build must raise."""
+    persist_dir = tmp_path / "chroma_mismatch"
+    build_index(sample_chunks, persist_dir=persist_dir, embedder=FakeEmbedder())
+
+    with pytest.raises(EmbeddingModelMismatchError, match="fake.*other-fake"):
+        load_retriever(persist_dir, embedder=OtherFakeEmbedder(), chunks=sample_chunks)
+
+
+def test_load_retriever_allows_matching_embedding_model(
+    tmp_path: Path, sample_chunks: list[Chunk]
+) -> None:
+    """Loading with the same model that built the index must succeed."""
+    persist_dir = tmp_path / "chroma_match"
+    build_index(sample_chunks, persist_dir=persist_dir, embedder=FakeEmbedder())
+
+    retriever = load_retriever(
+        persist_dir, embedder=FakeEmbedder(), chunks=sample_chunks
+    )
+    assert retriever is not None
+
+
+def test_load_retriever_warns_when_metadata_missing(
+    tmp_path: Path, sample_chunks: list[Chunk], caplog
+) -> None:
+    """A legacy collection without embedding_model metadata should load with a warning."""
+    persist_dir = tmp_path / "chroma_legacy"
+    # Simulate a legacy collection: build directly via VectorStore with no model name.
+    vs = VectorStore(persist_dir=persist_dir)  # no embedding_model_name passed
+    vs.ingest(sample_chunks, FakeEmbedder())
+    assert (vs._col.metadata or {}).get("embedding_model") is None
+
+    # Should NOT raise; should still return a working retriever.
+    retriever = load_retriever(
+        persist_dir, embedder=FakeEmbedder(), chunks=sample_chunks
+    )
+    assert retriever is not None
