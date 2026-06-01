@@ -35,7 +35,7 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _citation import Cited, assert_supported, find_in_chunks  # noqa: E402
+from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,7 @@ def main() -> None:
         embedding_model="all-MiniLM-L6-v2",
         collection_name="g2p_proteins",
     )
+    print_index_manifest(retriever)
 
     # ------------------------------------------------------------------
     # 2. Query the BMPR2 side. The G2P index advertises chunk_type values

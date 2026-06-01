@@ -20,6 +20,15 @@ from g2p_rag.embed import EmbeddingModel, get_embedder
 log = structlog.get_logger()
 
 
+def _canonical_model_name(name: str) -> str:
+    """Strip the leading "sentence-transformers/" prefix; lowercase; squash whitespace.
+
+    HuggingFace lets you load either form (``sentence-transformers/all-MiniLM-L6-v2``
+    or just ``all-MiniLM-L6-v2``); treat them as equivalent for the consistency check.
+    """
+    return (name or "").strip().lower().removeprefix("sentence-transformers/")
+
+
 # ---------------------------------------------------------------------------
 # Index manifest helpers (F2 — every build stamps full provenance)
 # ---------------------------------------------------------------------------
@@ -650,7 +659,10 @@ def load_retriever(
                 "cannot verify consistency. Rebuild the index to enable the check."
             ),
         )
-    elif stored_model != embedder.model_name:
+    elif _canonical_model_name(stored_model) != _canonical_model_name(embedder.model_name):
+        # Canonicalised comparison treats "sentence-transformers/foo" and "foo"
+        # as equivalent (HF accepts either); the error keeps the original strings
+        # so users see exactly what was stored vs. requested.
         raise EmbeddingModelMismatchError(
             f"Index built with {stored_model!r} but query uses {embedder.model_name!r}"
         )

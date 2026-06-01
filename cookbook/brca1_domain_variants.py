@@ -17,6 +17,9 @@ from pathlib import Path
 
 # Allow running directly from the cookbook/ directory without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _citation import print_index_manifest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +117,7 @@ def main() -> None:
         embedder=embedder,
         collection_name="brca1_cookbook",
     )
+    print_index_manifest(retriever)
     print(f"  Index ready — {len(chunks)} chunks embedded and stored.")
 
     # ------------------------------------------------------------------

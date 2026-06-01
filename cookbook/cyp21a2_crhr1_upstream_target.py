@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from g2p_rag import G2PRetriever, RetrievedChunk
 
 # Citation-discipline helper (built in the preceding workflow phase).
-from _citation import Cited, assert_supported, find_in_chunks
+from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +147,7 @@ def main() -> None:
         embedding_model=EMBEDDING_MODEL,
         collection_name=COLLECTION,
     )
+    print_index_manifest(retriever)
 
     # ------------------------------------------------------------------
     # 2. CYP21A2 - the disease gene

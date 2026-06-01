@@ -36,7 +36,7 @@ from typing import Iterable
 
 from g2p_rag import G2PRetriever, RetrievedChunk
 
-from _citation import Cited, assert_supported, find_in_chunks
+from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +194,7 @@ def main() -> None:
         embedding_model="all-MiniLM-L6-v2",
         collection_name="g2p_proteins",
     )
+    print_index_manifest(retriever)
 
     # gene -> chunk_type -> RetrievedChunk | None
     collected: dict[str, dict[str, RetrievedChunk | None]] = defaultdict(dict)

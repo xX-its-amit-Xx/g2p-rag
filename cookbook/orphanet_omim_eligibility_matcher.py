@@ -73,7 +73,7 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _citation import Cited, assert_supported, find_in_chunks  # noqa: E402
+from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +379,7 @@ def main() -> None:  # noqa: C901  — orchestration script, deliberately linear
         embedding_model=EMBEDDING_MODEL,
         collection_name=COLLECTION,
     )
+    print_index_manifest(retriever)
 
     # ------------------------------------------------------------------
     # Step 2 — Sweep every indexed gene's disease chunk; keyword-filter.
