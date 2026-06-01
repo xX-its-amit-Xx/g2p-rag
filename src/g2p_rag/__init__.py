@@ -99,10 +99,18 @@ class G2PRetriever:
     def __init__(
         self,
         persist_dir: str | Path = "./data/chroma",
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
         collection_name: str = "g2p_proteins",
     ) -> None:
-        """Store configuration; index is loaded lazily on first retrieve() call."""
+        """Store configuration; index is loaded lazily on first retrieve() call.
+
+        The default ``embedding_model`` matches the CLI's ingest default
+        (``sentence-transformers/all-MiniLM-L6-v2``) so the public API
+        works against an index built by ``g2p-rag ingest`` out of the box.
+        Using the short ``all-MiniLM-L6-v2`` name would trip the
+        embedding-model consistency check in load_retriever because the
+        index stores the prefixed form.
+        """
         self.persist_dir = persist_dir
         self.embedding_model = embedding_model
         self.collection_name = collection_name
