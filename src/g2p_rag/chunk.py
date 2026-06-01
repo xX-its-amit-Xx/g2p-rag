@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from g2p_rag.fetch import ClinVarVariant, GeneStructureMap, ProteinDomain, PTMSite  # noqa: F401
+from g2p_rag.fetch import (  # noqa: F401
+    ClinVarVariant,
+    GenccDisease,
+    GeneStructureMap,
+    PDBStructure,
+    ProteinDomain,
+    PTMSite,
+)
 
 if TYPE_CHECKING:
     pass
@@ -487,6 +494,152 @@ class ProteinChunker:
         return self._comment_chunk(structure, text, "disease", "DISEASE")
 
     # ------------------------------------------------------------------
+    # G2P /api/gene/ cross-reference chunks (PDB, AlphaFold, ChEMBL,
+    # DrugBank, OMIM, Orphanet, HGNC aliases, GenCC diseases). These
+    # fields are unique to the G2P portal payload and were ignored by
+    # the UniProt-direct fallback path until v0.1.2.
+    # ------------------------------------------------------------------
+
+    def cross_references_chunk(
+        self, structure: GeneStructureMap
+    ) -> "Chunk | None":
+        """Emit a single chunk listing AlphaFold / ChEMBL / DrugBank / OMIM / Orphanet / HGNC aliases."""
+        af = getattr(structure, "alphafold_id", "") or ""
+        chembl = getattr(structure, "chembl_id", "") or ""
+        drugbank = getattr(structure, "drugbank_id", "") or ""
+        omim = getattr(structure, "omim_id", "") or ""
+        orphanet = getattr(structure, "orphanet_id", "") or ""
+        aliases: list[str] = list(getattr(structure, "hgnc_aliases", []) or [])
+
+        if not (af or chembl or drugbank or omim or orphanet or aliases):
+            return None
+
+        lines: list[str] = [
+            f"Gene: {structure.gene_symbol} | UniProt: {structure.uniprot_id}",
+            "Cross-references",
+            "",
+        ]
+        if af:
+            lines.append(f"AlphaFold model: {af}")
+        if chembl:
+            lines.append(f"ChEMBL target ID: {chembl}")
+        if drugbank:
+            lines.append(f"DrugBank ID: {drugbank}")
+        if omim:
+            lines.append(f"OMIM ID: {omim}")
+        if orphanet:
+            lines.append(f"Orphanet ID: {orphanet}")
+        if aliases:
+            lines.append(f"HGNC aliases: {', '.join(aliases)}")
+
+        chunk = Chunk(
+            text="\n".join(lines),
+            chunk_type="cross_references",
+            gene=structure.gene_symbol,
+            uniprot_id=structure.uniprot_id,
+            residue_start=0,
+            residue_end=0,
+            metadata={
+                "alphafold_id": af,
+                "chembl_id": chembl,
+                "drugbank_id": drugbank,
+                "omim_id": omim,
+                "orphanet_id": orphanet,
+            },
+        )
+        log.debug(
+            "cross_references_chunk created",
+            gene=structure.gene_symbol,
+            uniprot_id=structure.uniprot_id,
+        )
+        return chunk
+
+    def structures_chunk(
+        self, structure: GeneStructureMap
+    ) -> "Chunk | None":
+        """Emit one chunk listing all experimentally-resolved PDB structures."""
+        pdbs: list[PDBStructure] = list(
+            getattr(structure, "pdb_structures", []) or []
+        )
+        if not pdbs:
+            return None
+
+        lines: list[str] = [
+            f"Gene: {structure.gene_symbol} | UniProt: {structure.uniprot_id}",
+            f"Experimental structures ({len(pdbs)})",
+            "",
+        ]
+        for s in pdbs:
+            cells = [s.pdb_id]
+            if s.method:
+                cells.append(s.method)
+            if s.resolution:
+                cells.append(s.resolution)
+            if s.chain_range:
+                cells.append(s.chain_range)
+            lines.append("  • " + " | ".join(cells))
+
+        chunk = Chunk(
+            text="\n".join(lines),
+            chunk_type="structures",
+            gene=structure.gene_symbol,
+            uniprot_id=structure.uniprot_id,
+            residue_start=0,
+            residue_end=0,
+            metadata={"pdb_count": len(pdbs)},
+        )
+        log.debug(
+            "structures_chunk created",
+            gene=structure.gene_symbol,
+            n=len(pdbs),
+        )
+        return chunk
+
+    def diseases_chunk(
+        self, structure: GeneStructureMap
+    ) -> "Chunk | None":
+        """Emit one chunk listing GenCC-curated gene-disease associations."""
+        diseases: list[GenccDisease] = list(
+            getattr(structure, "gencc_diseases", []) or []
+        )
+        if not diseases:
+            return None
+
+        lines: list[str] = [
+            f"Gene: {structure.gene_symbol} | UniProt: {structure.uniprot_id}",
+            f"GenCC gene-disease associations ({len(diseases)})",
+            "",
+        ]
+        for d in diseases:
+            bits: list[str] = []
+            if d.disease_name:
+                bits.append(d.disease_name)
+            if d.mondo_id:
+                bits.append(f"[{d.mondo_id}]")
+            if d.classification:
+                bits.append(f"({d.classification})")
+            if d.moi:
+                bits.append(f"MOI: {d.moi}")
+            if bits:
+                lines.append("  • " + " ".join(bits))
+
+        chunk = Chunk(
+            text="\n".join(lines),
+            chunk_type="diseases",
+            gene=structure.gene_symbol,
+            uniprot_id=structure.uniprot_id,
+            residue_start=0,
+            residue_end=0,
+            metadata={"disease_count": len(diseases)},
+        )
+        log.debug(
+            "diseases_chunk created",
+            gene=structure.gene_symbol,
+            n=len(diseases),
+        )
+        return chunk
+
+    # ------------------------------------------------------------------
     # Combined entry point
     # ------------------------------------------------------------------
 
@@ -509,13 +662,21 @@ class ProteinChunker:
                 self.disease_chunk(structure),
             ) if c is not None
         ]
-        all_chunks = d_chunks + v_chunks + [summary] + biology_chunks
+        crossref_chunks = [
+            c for c in (
+                self.cross_references_chunk(structure),
+                self.structures_chunk(structure),
+                self.diseases_chunk(structure),
+            ) if c is not None
+        ]
+        all_chunks = d_chunks + v_chunks + [summary] + biology_chunks + crossref_chunks
         log.info(
             "gene chunked",
             gene=structure.gene_symbol,
             n_domain=len(d_chunks),
             n_variant_cluster=len(v_chunks),
             n_biology=len(biology_chunks),
+            n_crossref=len(crossref_chunks),
             total=len(all_chunks),
         )
         return all_chunks

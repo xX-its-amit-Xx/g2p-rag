@@ -11,6 +11,9 @@ from g2p_rag.fetch import (
     GeneStructureMap,
     ProteinFeatures,
     ClinVarVariant,
+    _parse_pdb_information,
+    _parse_hgnc_aliases,
+    _parse_gencc_diseases,
 )
 
 
@@ -214,6 +217,125 @@ def test_clinvar_client_empty_gene(clinvar_client: ClinVarClient) -> None:
     assert results == []
     # Only esearch should have been called; esummary must not be reached
     assert mock_get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# v0.1.2 — G2P /api/gene/ cross-reference parsers
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pdb_information_splits_entries() -> None:
+    """PDB delimited string: entries by '&', columns by ';'."""
+    raw = "1JM7;NMR;N/A;A=1-110&1JNX;X-ray;2.5Å;A=1646-1859"
+    pdbs = _parse_pdb_information(raw)
+    assert len(pdbs) == 2
+    assert pdbs[0].pdb_id == "1JM7"
+    assert pdbs[0].method == "NMR"
+    assert pdbs[0].chain_range == "A=1-110"
+    assert pdbs[1].pdb_id == "1JNX"
+    assert pdbs[1].resolution == "2.5Å"
+
+
+def test_parse_pdb_information_skips_blank_and_missing_columns() -> None:
+    """Blank entries are skipped; rows with missing trailing columns survive."""
+    raw = "&1ABC;X-ray&"
+    pdbs = _parse_pdb_information(raw)
+    assert len(pdbs) == 1
+    assert pdbs[0].pdb_id == "1ABC"
+    assert pdbs[0].method == "X-ray"
+    assert pdbs[0].resolution == ""
+    assert pdbs[0].chain_range == ""
+
+
+def test_parse_pdb_information_handles_not_available() -> None:
+    """'not-available' and empty string both yield an empty list."""
+    assert _parse_pdb_information("") == []
+    assert _parse_pdb_information("not-available") == []
+
+
+def test_parse_hgnc_aliases_splits_commas() -> None:
+    """Comma-separated aliases are split and stripped."""
+    aliases = _parse_hgnc_aliases("FANCS, RNF53,  BRCC1")
+    assert aliases == ["FANCS", "RNF53", "BRCC1"]
+
+
+def test_parse_hgnc_aliases_handles_not_available() -> None:
+    """'not-available' / '' / empty all yield an empty list."""
+    assert _parse_hgnc_aliases("") == []
+    assert _parse_hgnc_aliases("not-available") == []
+
+
+def test_parse_gencc_diseases_from_json_string() -> None:
+    """JSON-encoded gencc list is parsed into GenccDisease records."""
+    raw = json.dumps([
+        {
+            "disease_title": "hereditary breast ovarian cancer syndrome",
+            "disease_curie": "MONDO:0011450",
+            "classification_title": "Definitive",
+            "moi_title": "Autosomal dominant",
+        },
+        {
+            "disease_title": "Fanconi anemia",
+            "disease_curie": "MONDO:0019391",
+        },
+    ])
+    diseases = _parse_gencc_diseases(raw)
+    assert len(diseases) == 2
+    assert diseases[0].mondo_id == "MONDO:0011450"
+    assert diseases[0].moi == "Autosomal dominant"
+    assert diseases[1].disease_name == "Fanconi anemia"
+
+
+def test_parse_gencc_diseases_handles_bad_json() -> None:
+    """Malformed JSON yields an empty list (no exception)."""
+    assert _parse_gencc_diseases("{not-json") == []
+    assert _parse_gencc_diseases("") == []
+    assert _parse_gencc_diseases("not-available") == []
+
+
+def test_parse_gencc_diseases_accepts_list_input() -> None:
+    """Some snapshots ship gencc as a real list rather than a JSON string."""
+    raw = [{"disease": "X", "MONDO": "MONDO:0000001"}]
+    diseases = _parse_gencc_diseases(raw)
+    assert len(diseases) == 1
+    assert diseases[0].disease_name == "X"
+    assert diseases[0].mondo_id == "MONDO:0000001"
+
+
+def test_g2p_client_extracts_high_value_fields(g2p_client: G2PClient) -> None:
+    """_parse_structure_map pulls AlphaFold / ChEMBL / PDB / HGNC alias / GenCC."""
+    payload = {
+        "status": "success",
+        "data": [{
+            "GeneCard": "BRCA1",
+            "UniprotKB_Entry": "P38398",
+            "Canonical_Protein_Isoform": "P38398-1",
+            "AlphaFold": "P38398",
+            "ChEMBL": "CHEMBL5990",
+            "DrugBank": "not-available",
+            "OMIM_id": "113705",
+            "Orphanet_id": "145",
+            "HGNC_alias": "FANCS,RNF53",
+            "PDBinformation": "1JM7;NMR;N/A;A=1-110&1JNX;X-ray;2.5Å;A=1646-1859",
+            "genccDiseases": json.dumps([
+                {"disease_title": "HBOC", "disease_curie": "MONDO:0011450"},
+            ]),
+        }],
+    }
+    with patch.object(g2p_client._client, "get",
+                       return_value=_make_response(200, payload)):
+        result = g2p_client.get_gene_structure_map("BRCA1")
+
+    assert result.alphafold_id == "P38398"
+    assert result.chembl_id == "CHEMBL5990"
+    assert result.drugbank_id == ""  # 'not-available' is filtered
+    assert result.omim_id == "113705"
+    assert result.orphanet_id == "145"
+    assert result.hgnc_aliases == ["FANCS", "RNF53"]
+    assert len(result.pdb_structures) == 2
+    assert result.pdb_structures[0].pdb_id == "1JM7"
+    assert len(result.gencc_diseases) == 1
+    assert result.gencc_diseases[0].mondo_id == "MONDO:0011450"
 
 
 def test_clinvar_client_uses_cache(clinvar_client: ClinVarClient) -> None:

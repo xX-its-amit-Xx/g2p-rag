@@ -1,6 +1,6 @@
 [project]
 name = "g2p-rag"
-version = "0.1.0"
+version = "0.1.2"
 description = "Retrieval-Augmented Generation over the Broad Institute G2P portal"
 readme = "README.md"
 license = { file = "LICENSE" }

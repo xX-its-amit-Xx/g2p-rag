@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from pathlib import Path
@@ -95,6 +96,24 @@ class ProteinFeatures(BaseModel):
     disease_text: str = ""
 
 
+class PDBStructure(BaseModel):
+    """A single experimentally-resolved PDB structure entry."""
+
+    pdb_id: str
+    method: str = ""
+    resolution: str = ""
+    chain_range: str = ""
+
+
+class GenccDisease(BaseModel):
+    """A GenCC-curated gene-disease association record."""
+
+    disease_name: str = ""
+    mondo_id: str = ""
+    classification: str = ""
+    moi: str = ""  # mode of inheritance
+
+
 class GeneStructureMap(BaseModel):
     """Gene-to-transcript-to-protein isoform structure for a gene symbol."""
 
@@ -107,6 +126,17 @@ class GeneStructureMap(BaseModel):
     features: ProteinFeatures = Field(
         default_factory=lambda: ProteinFeatures(uniprot_id="")
     )
+    # High-value cross-references from G2P /api/gene/ that aren't surfaced
+    # by UniProt-direct feature pulls. All optional; empty string / list
+    # when the upstream record had "not-available" or no field.
+    alphafold_id: str = ""
+    chembl_id: str = ""
+    drugbank_id: str = ""
+    omim_id: str = ""
+    orphanet_id: str = ""
+    hgnc_aliases: list[str] = []
+    pdb_structures: list[PDBStructure] = []
+    gencc_diseases: list[GenccDisease] = []
 
 
 class ClinVarVariant(BaseModel):
@@ -155,6 +185,110 @@ def _clean_comment_text(text: str, max_chars: int = 500) -> str:
         last_space = cut.rfind(" ")
         cleaned = (cut[:last_space] if last_space > 0 else cut).rstrip() + "…"
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Parsers for G2P /api/gene/ high-value cross-reference fields
+# ---------------------------------------------------------------------------
+
+
+def _parse_pdb_information(raw: str) -> list["PDBStructure"]:
+    """Parse the G2P PDBinformation delimited string into PDBStructure records.
+
+    Format observed in /api/gene/ responses (2026-05): entries separated by
+    ``&``, columns within each entry separated by ``;``. Column order is
+    typically ``pdb_id;method;resolution;chain_range`` though some rows omit
+    trailing fields. Malformed rows are skipped with a debug log rather than
+    raising, since one bad row shouldn't kill an entire ingest.
+    """
+    if not raw or raw == "not-available":
+        return []
+    out: list[PDBStructure] = []
+    for entry in raw.split("&"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = [p.strip() for p in entry.split(";")]
+        pdb_id = parts[0] if parts else ""
+        if not pdb_id:
+            continue
+        method = parts[1] if len(parts) > 1 else ""
+        resolution = parts[2] if len(parts) > 2 else ""
+        chain_range = parts[3] if len(parts) > 3 else ""
+        out.append(
+            PDBStructure(
+                pdb_id=pdb_id,
+                method=method,
+                resolution=resolution,
+                chain_range=chain_range,
+            )
+        )
+    return out
+
+
+def _parse_hgnc_aliases(raw: str) -> list[str]:
+    """Split a comma-separated HGNC_alias string into a clean list."""
+    if not raw or raw == "not-available":
+        return []
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+
+def _parse_gencc_diseases(raw: Any) -> list["GenccDisease"]:
+    """Parse genccDiseases (JSON string or list) into structured records.
+
+    The G2P portal serialises this column as a JSON-encoded string most of
+    the time, but some snapshots embed it as a plain list. We accept both
+    shapes and tolerate per-row JSON errors so a single malformed entry
+    can't break ingest for the whole gene.
+    """
+    if not raw or raw == "not-available":
+        return []
+    parsed: Any = raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            log.debug("g2p.parse_gencc.json_failed", raw_len=len(raw))
+            return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[GenccDisease] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        # GenCC commonly uses these keys; cope with a few naming variants
+        # so we don't silently drop rows when the schema shifts.
+        disease_name = str(
+            entry.get("disease_title")
+            or entry.get("disease")
+            or entry.get("disease_name")
+            or ""
+        ).strip()
+        mondo_id = str(
+            entry.get("disease_curie")
+            or entry.get("mondo_id")
+            or entry.get("MONDO")
+            or ""
+        ).strip()
+        classification = str(
+            entry.get("classification_title")
+            or entry.get("classification")
+            or ""
+        ).strip()
+        moi = str(
+            entry.get("moi_title") or entry.get("moi") or ""
+        ).strip()
+        if not (disease_name or mondo_id):
+            continue
+        out.append(
+            GenccDisease(
+                disease_name=disease_name,
+                mondo_id=mondo_id,
+                classification=classification,
+                moi=moi,
+            )
+        )
+    return out
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
@@ -429,6 +563,24 @@ class G2PClient:
 
         uniprot_id = _pick("UniprotKB_Entry", "uniprot_id", "uniprotId")
         protein_id = _pick("Canonical_Protein_Isoform", "protein_id")
+
+        alphafold_id = _pick("AlphaFold", "alphafold_id", "alphafoldId")
+        chembl_id = _pick("ChEMBL", "chembl_id", "chemblId")
+        drugbank_id = _pick("DrugBank", "drugbank_id", "drugBankId")
+        omim_id = _pick("OMIM_id", "omim_id", "omimId")
+        orphanet_id = _pick("Orphanet_id", "orphanet_id", "orphanetId")
+
+        hgnc_aliases = _parse_hgnc_aliases(
+            _pick("HGNC_alias", "hgnc_alias", "HGNC_aliases")
+        )
+        pdb_structures = _parse_pdb_information(
+            _pick("PDBinformation", "pdb_information", "PDB_information")
+        )
+        # genccDiseases is delivered as a JSON-encoded string in the
+        # G2P payload (see /api/gene/ samples) — parse it defensively.
+        gencc_raw = rec.get("genccDiseases")
+        gencc_diseases = _parse_gencc_diseases(gencc_raw)
+
         return GeneStructureMap(
             gene_symbol=gene_symbol,
             uniprot_id=uniprot_id,
@@ -436,6 +588,14 @@ class G2PClient:
             protein_id=protein_id,
             sequence="",
             length=0,
+            alphafold_id=alphafold_id,
+            chembl_id=chembl_id,
+            drugbank_id=drugbank_id,
+            omim_id=omim_id,
+            orphanet_id=orphanet_id,
+            hgnc_aliases=hgnc_aliases,
+            pdb_structures=pdb_structures,
+            gencc_diseases=gencc_diseases,
         )
 
     def _parse_protein_features(self, uniprot_id: str, data: dict) -> ProteinFeatures:

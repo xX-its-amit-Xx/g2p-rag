@@ -4,7 +4,9 @@ import pytest
 from g2p_rag.chunk import ProteinChunker, Chunk, chunk_all
 from g2p_rag.fetch import (
     ClinVarVariant,
+    GenccDisease,
     GeneStructureMap,
+    PDBStructure,
     ProteinFeatures,
     ProteinDomain,
 )
@@ -197,3 +199,128 @@ def test_to_chroma_metadata_extra_fields_are_strings(sample_chunk: Chunk) -> Non
     meta = sample_chunk.to_chroma_metadata()
     assert "domain_name" in meta
     assert isinstance(meta["domain_name"], str)
+
+
+# ---------------------------------------------------------------------------
+# v0.1.2 — cross_references / structures / diseases chunks
+# ---------------------------------------------------------------------------
+
+
+def _bare_structure(**overrides) -> GeneStructureMap:
+    """Build a minimal GeneStructureMap for cross-ref / PDB / GenCC tests."""
+    base = dict(
+        gene_symbol="BRCA1",
+        uniprot_id="P38398",
+        transcript_id="",
+        protein_id="",
+        sequence="",
+        length=0,
+        features=ProteinFeatures(uniprot_id="P38398"),
+    )
+    base.update(overrides)
+    return GeneStructureMap(**base)
+
+
+def test_cross_references_chunk_populated() -> None:
+    """When IDs are present, cross_references_chunk emits a chunk with all IDs."""
+    structure = _bare_structure(
+        alphafold_id="P38398",
+        chembl_id="CHEMBL5990",
+        drugbank_id="DB00001",
+        omim_id="113705",
+        orphanet_id="145",
+        hgnc_aliases=["FANCS", "RNF53"],
+    )
+    chunker = ProteinChunker()
+    chunk = chunker.cross_references_chunk(structure)
+    assert chunk is not None
+    assert chunk.chunk_type == "cross_references"
+    assert chunk.gene == "BRCA1"
+    assert "AlphaFold" in chunk.text and "P38398" in chunk.text
+    assert "CHEMBL5990" in chunk.text
+    assert "DB00001" in chunk.text
+    assert "113705" in chunk.text
+    assert "FANCS" in chunk.text and "RNF53" in chunk.text
+
+
+def test_cross_references_chunk_empty_returns_none() -> None:
+    """No cross-refs present → cross_references_chunk returns None."""
+    structure = _bare_structure()
+    chunker = ProteinChunker()
+    assert chunker.cross_references_chunk(structure) is None
+
+
+def test_structures_chunk_lists_pdbs() -> None:
+    """structures_chunk emits one line per PDB entry with all parsed columns."""
+    structure = _bare_structure(
+        pdb_structures=[
+            PDBStructure(pdb_id="1JM7", method="NMR", resolution="N/A",
+                         chain_range="A=1-110"),
+            PDBStructure(pdb_id="1JNX", method="X-ray", resolution="2.5Å",
+                         chain_range="A=1646-1859"),
+        ]
+    )
+    chunker = ProteinChunker()
+    chunk = chunker.structures_chunk(structure)
+    assert chunk is not None
+    assert chunk.chunk_type == "structures"
+    assert "1JM7" in chunk.text and "1JNX" in chunk.text
+    assert "NMR" in chunk.text and "X-ray" in chunk.text
+    assert chunk.metadata["pdb_count"] == 2
+
+
+def test_structures_chunk_empty_returns_none() -> None:
+    """No PDB entries → structures_chunk returns None."""
+    structure = _bare_structure()
+    chunker = ProteinChunker()
+    assert chunker.structures_chunk(structure) is None
+
+
+def test_diseases_chunk_lists_gencc() -> None:
+    """diseases_chunk emits one line per GenCC disease record."""
+    structure = _bare_structure(
+        gencc_diseases=[
+            GenccDisease(
+                disease_name="hereditary breast ovarian cancer syndrome",
+                mondo_id="MONDO:0011450",
+                classification="Definitive",
+                moi="Autosomal dominant",
+            ),
+            GenccDisease(disease_name="Fanconi anemia", mondo_id="MONDO:0019391"),
+        ]
+    )
+    chunker = ProteinChunker()
+    chunk = chunker.diseases_chunk(structure)
+    assert chunk is not None
+    assert chunk.chunk_type == "diseases"
+    assert "MONDO:0011450" in chunk.text
+    assert "hereditary breast ovarian cancer syndrome" in chunk.text
+    assert "Fanconi anemia" in chunk.text
+    assert chunk.metadata["disease_count"] == 2
+
+
+def test_diseases_chunk_empty_returns_none() -> None:
+    """No GenCC diseases → diseases_chunk returns None."""
+    structure = _bare_structure()
+    chunker = ProteinChunker()
+    assert chunker.diseases_chunk(structure) is None
+
+
+def test_chunk_gene_includes_new_chunk_types(
+    sample_variants: list[ClinVarVariant],
+) -> None:
+    """chunk_gene wires the new cross-ref / structures / diseases chunkers."""
+    structure = _bare_structure(
+        alphafold_id="P38398",
+        chembl_id="CHEMBL5990",
+        pdb_structures=[PDBStructure(pdb_id="1JM7", method="NMR")],
+        gencc_diseases=[
+            GenccDisease(disease_name="HBOC", mondo_id="MONDO:0011450"),
+        ],
+    )
+    chunker = ProteinChunker()
+    chunks = chunker.chunk_gene(structure, sample_variants)
+    types = {c.chunk_type for c in chunks}
+    assert "cross_references" in types
+    assert "structures" in types
+    assert "diseases" in types

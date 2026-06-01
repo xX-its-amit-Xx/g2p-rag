@@ -53,6 +53,14 @@ Existing fields will not be removed or renamed in 0.x.
 
 ## Changelog
 
+- **v0.1.2** — `RetrievedChunk.chunk_type` Literal extended with
+  `cross_references`, `structures`, `diseases`. These surface previously
+  ignored high-biology fields from the G2P `/api/gene/{symbol}` payload:
+  AlphaFold / ChEMBL / DrugBank / OMIM / Orphanet IDs and HGNC aliases
+  (`cross_references`), parsed PDB entries with method + resolution
+  + chain range (`structures`), and GenCC-curated gene-disease
+  associations with MONDO IDs (`diseases`). Additive only — pre-existing
+  chunk types continue to be emitted unchanged.
 - **v0.1.1** — `RetrievedChunk.chunk_type` Literal extended with
   `function`, `pathway`, `subunit`, `disease` (UniProt comment-derived
   biology chunks). Additive only — the original three values

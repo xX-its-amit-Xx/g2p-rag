@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __author__ = "Amit Shenoy"
 __license__ = "GPL-3.0"
 
@@ -38,6 +38,11 @@ class RetrievedChunk(BaseModel):
         "pathway",
         "subunit",
         "disease",
+        # Added in v0.1.2 — G2P /api/gene/ cross-reference chunks.
+        # Additive only; existing types continue to be emitted unchanged.
+        "cross_references",
+        "structures",
+        "diseases",
     ] = Field(
         description="Granularity of the chunk."
     )
