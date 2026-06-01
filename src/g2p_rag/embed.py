@@ -22,6 +22,7 @@ class EmbeddingModel(Protocol):
 
     model_name: str
     dim: int
+    model_revision: str
 
     def embed(self, texts: list[str]) -> np.ndarray: ...
 
@@ -55,11 +56,29 @@ class SentenceTransformerEmbedder:
             model_name, device=device
         )
         self.dim: int = self._model.get_sentence_embedding_dimension()
+        # Capture the HuggingFace revision SHA so consumers can pin/verify the
+        # exact model snapshot used to build a downstream index.  Best-effort:
+        # if the lookup fails (offline, private repo, transient network) we
+        # leave model_revision as an empty string rather than blocking model
+        # construction.  Downstream consistency checks treat "" as "unknown".
+        self.model_revision: str = ""
+        try:
+            from huggingface_hub import HfApi  # type: ignore[import]
+
+            info = HfApi().model_info(model_name)
+            self.model_revision = str(getattr(info, "sha", "") or "")
+        except Exception as exc:  # pragma: no cover — best-effort metadata
+            log.warning(
+                "SentenceTransformerEmbedder.revision_lookup_failed",
+                model=model_name,
+                error=str(exc),
+            )
         log.info(
             "SentenceTransformerEmbedder ready",
             model=model_name,
             device=device,
             dim=self.dim,
+            revision=self.model_revision,
         )
 
     def embed(self, texts: list[str]) -> np.ndarray:
@@ -119,6 +138,10 @@ class OpenAIEmbedder:
             )
         self._client = openai.OpenAI(api_key=resolved_key)
         self.dim: int = _OPENAI_DIM_MAP.get(model_name, 1536)
+        # OpenAI does not expose a per-snapshot revision the way HF does;
+        # leave as "" so the downstream consistency check skips the revision
+        # comparison (it only enforces when both sides are non-empty).
+        self.model_revision: str = ""
         log.info(
             "OpenAIEmbedder ready",
             model=model_name,

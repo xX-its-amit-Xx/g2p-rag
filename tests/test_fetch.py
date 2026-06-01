@@ -65,12 +65,26 @@ def g2p_client(tmp_cache_dir: Path) -> G2PClient:
 
 
 def test_g2p_client_get_structure_map_success(g2p_client: G2PClient) -> None:
-    """Happy-path: HTTP 200 response is parsed into a GeneStructureMap."""
+    """Happy-path: HTTP 200 response is parsed into a GeneStructureMap.
+
+    The current G2P /api/gene/{symbol} endpoint (2026-05) wraps the record
+    in a {status, data: [...]} envelope and uses GeneCard-style field names
+    (UniprotKB_Entry, Canonical_Protein_Isoform, …). It does NOT return a
+    transcript_id or sequence — those fields are populated downstream via
+    UniProt in get_protein_features.
+    """
     payload = {
-        "uniprot_id": "P38398",
-        "transcript_id": "ENST00000357654",
-        "protein_id": "ENSP00000350283",
-        "sequence": "MDLS",
+        "status": "success",
+        "data": [{
+            "GeneCard": "BRCA1",
+            "UniprotKB_Entry": "P38398",
+            "Canonical_Protein_Isoform": "P38398-1",
+            "AlphaFold": "P38398",
+            "ChEMBL": "CHEMBL5990",
+            "DrugBank": "not-available",
+            "HGNC_alias": "FANCS,RNF53",
+            "PDBinformation": "1JM7;NMR;N/A;A=1-110",
+        }],
     }
     with patch.object(g2p_client._client, "get", return_value=_make_response(200, payload)):
         result = g2p_client.get_gene_structure_map("BRCA1")
@@ -78,8 +92,11 @@ def test_g2p_client_get_structure_map_success(g2p_client: G2PClient) -> None:
     assert isinstance(result, GeneStructureMap)
     assert result.gene_symbol == "BRCA1"
     assert result.uniprot_id == "P38398"
-    assert result.transcript_id == "ENST00000357654"
-    assert result.sequence == "MDLS"
+    assert result.protein_id == "P38398-1"
+    # /api/gene/ no longer carries transcript_id or per-residue sequence —
+    # those are now sourced from UniProt by get_protein_features.
+    assert result.transcript_id == ""
+    assert result.sequence == ""
 
 
 def test_g2p_client_uses_cache(g2p_client: G2PClient) -> None:
@@ -108,8 +125,20 @@ def test_g2p_client_handles_404(g2p_client: G2PClient) -> None:
     assert result.uniprot_id == ""
 
 
+@pytest.mark.skip(
+    reason="legacy G2P endpoint retired upstream; per-residue features now "
+    "via _uniprot_features_sync — see test_uniprot_features_* once added"
+)
 def test_g2p_client_parses_protein_features(g2p_client: G2PClient) -> None:
-    """Protein-features endpoint response is fully parsed into ProteinFeatures."""
+    """Protein-features endpoint response is fully parsed into ProteinFeatures.
+
+    The G2P `/protein-features/{uniprot}` endpoint was retired upstream
+    (2026-05). G2PClient.get_protein_features now delegates to UniProt's
+    REST API via the module-level `_uniprot_fetch_raw` /
+    `_uniprot_features_sync` helpers, so this httpx-client-patching test
+    no longer exercises the live path. Skipping until we add coverage
+    against the UniProt fallback shape.
+    """
     payload = {
         "sequence": "MDLSALRV",
         "domains": [{"name": "RING", "start": 2, "end": 64, "type": "domain", "description": "E3"}],

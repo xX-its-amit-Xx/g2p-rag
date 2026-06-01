@@ -82,6 +82,12 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Eval tests are opt-in: they need the full chroma index and load the
+# sentence-transformers model. Run them with `pytest -m eval`.
+addopts = "-m 'not eval'"
+markers = [
+    "eval: Run evaluation tests (slow, needs chroma index)",
+]
 
 [tool.ruff]
 line-length = 100

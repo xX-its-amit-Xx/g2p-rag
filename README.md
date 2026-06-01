@@ -59,6 +59,22 @@ g2p-rag query "What BRCA1 domains overlap with pathogenic missense variants?"
 make download-index
 ```
 
+`make download-index` fetches both `chroma_index_v<VERSION>.tar.gz` and `chroma_index_v<VERSION>.sha256` from the matching GitHub Release, verifies the SHA256 of the tarball against the published hash, and only then extracts it into `data/chroma/`. If the hash does not match, the tarball is deleted and the target exits with a non-zero status — the index is **never** extracted from a tampered or corrupt snapshot.
+
+To reproduce the integrity check manually:
+
+```bash
+# On Linux/macOS:
+sha256sum chroma_index_v0.1.2.tar.gz
+# Compare against the first column of the published .sha256 file:
+cat chroma_index_v0.1.2.sha256
+
+# Cross-platform (works on Windows too):
+python -c "import hashlib; print(hashlib.sha256(open('chroma_index_v0.1.2.tar.gz','rb').read()).hexdigest())"
+```
+
+The output must exactly match the hex digest in `chroma_index_v0.1.2.sha256`.
+
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for LangChain and LlamaIndex adapter usage.
 
 ---

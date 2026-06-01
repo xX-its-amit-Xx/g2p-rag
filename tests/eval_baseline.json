@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "description": "Regression baseline for tests/test_eval.py. Each metric stores the measured value from the committed chroma index plus the threshold the test enforces (= measured - buffer). Bump these only when intentionally improving retrieval or after rebuilding the index.",
+    "measured_on_commit": "90d387d-pending-gap4",
+    "measured_utc": "2026-06-01T00:00:00Z",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "k": 5,
+    "n_qa_pairs": 8,
+    "buffer": 0.05
+  },
+  "metrics": {
+    "mean_recall_at_5": {
+      "measured": 1.0,
+      "threshold": 0.95
+    },
+    "mean_mrr": {
+      "measured": 1.0,
+      "threshold": 0.95
+    },
+    "mean_keyword_hit": {
+      "measured": 1.0,
+      "threshold": 0.85
+    }
+  }
+}

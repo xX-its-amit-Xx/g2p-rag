@@ -125,6 +125,20 @@
       "sha256": "eadf816693e9041dde3ef2cf78e624aa54d76b419955a87b413ee66b366afc57"
     }
   },
+  "BRCA1": {
+    "clinvar": {
+      "fetched_utc": "2026-06-01T18:45:52Z",
+      "sha256": "dc3706fed19c5fdac2e43bdadca34dbb47cf816c1540e3847c456caa54de9068"
+    },
+    "g2p": {
+      "fetched_utc": "2026-06-01T18:45:52Z",
+      "sha256": "4818be16d21f3edef59a34a2ea856a05b5ce7ce79b1eef1bc28b84c0c2117547"
+    },
+    "uniprot": {
+      "fetched_utc": "2026-06-01T18:45:52Z",
+      "sha256": "6073c4af47724d56f3c74a945e1af5ea8abdd8c8747be456f3bb06ff39dadb8f"
+    }
+  },
   "C5": {
     "clinvar": {
       "fetched_utc": "2026-06-01T17:30:58Z",

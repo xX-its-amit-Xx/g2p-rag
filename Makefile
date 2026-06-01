@@ -42,19 +42,51 @@ typecheck:
 download-index:
 	@echo "Downloading pre-built index from GitHub Releases..."
 	@mkdir -p $(INDEX_DIR)
-	@if command -v curl >/dev/null 2>&1; then \
-		curl -L "$(CHROMA_RELEASE_URL)" | tar -xz -C $(INDEX_DIR); \
+	@VERSION=$$(python -c "import g2p_rag; print(g2p_rag.__version__)"); \
+	TARBALL=chroma_index_v$$VERSION.tar.gz; \
+	SHAFILE=chroma_index_v$$VERSION.sha256; \
+	BASEURL=$$(echo "$(CHROMA_RELEASE_URL)" | sed 's|/[^/]*$$||'); \
+	if command -v curl >/dev/null 2>&1; then \
+		curl -L -o $$TARBALL "$$BASEURL/$$TARBALL" || { echo "Error: failed to download $$TARBALL"; exit 1; }; \
+		curl -L -o $$SHAFILE "$$BASEURL/$$SHAFILE" || { echo "Error: failed to download $$SHAFILE (no integrity file published)"; exit 1; }; \
 	elif command -v wget >/dev/null 2>&1; then \
-		wget -qO- "$(CHROMA_RELEASE_URL)" | tar -xz -C $(INDEX_DIR); \
+		wget -q -O $$TARBALL "$$BASEURL/$$TARBALL" || { echo "Error: failed to download $$TARBALL"; exit 1; }; \
+		wget -q -O $$SHAFILE "$$BASEURL/$$SHAFILE" || { echo "Error: failed to download $$SHAFILE (no integrity file published)"; exit 1; }; \
 	else \
 		echo "Error: curl or wget required. Install one and retry."; exit 1; \
-	fi
-	@echo "Index downloaded to $(INDEX_DIR)/chroma"
+	fi; \
+	echo "Verifying SHA256 of $$TARBALL against $$SHAFILE..."; \
+	python -c "import hashlib, sys; \
+	expected = open(sys.argv[2]).read().split()[0].strip().lower(); \
+	h = hashlib.sha256(); \
+	f = open(sys.argv[1], 'rb'); \
+	[h.update(b) for b in iter(lambda: f.read(65536), b'')]; \
+	f.close(); \
+	actual = h.hexdigest().lower(); \
+	(print('OK: sha256 matches', actual) if actual == expected else (print('FAIL: sha256 mismatch\n  expected:', expected, '\n  actual:  ', actual), sys.exit(1)))" \
+		$$TARBALL $$SHAFILE || { echo "Aborting: integrity check failed. Refusing to extract a tampered or corrupt snapshot."; rm -f $$TARBALL $$SHAFILE; exit 1; }; \
+	tar -xzf $$TARBALL -C $(INDEX_DIR); \
+	rm -f $$TARBALL $$SHAFILE; \
+	echo "Index downloaded and verified to $(INDEX_DIR)/chroma"
 
 package-index:
 	@echo "Packaging local index for release..."
-	tar -czf chroma_index_v$(shell python -c "import g2p_rag; print(g2p_rag.__version__)").tar.gz -C data chroma/
-	@echo "Upload the .tar.gz to GitHub Releases as a release asset."
+	@VERSION=$$(python -c "import g2p_rag; print(g2p_rag.__version__)"); \
+	TARBALL=chroma_index_v$$VERSION.tar.gz; \
+	SHAFILE=chroma_index_v$$VERSION.sha256; \
+	tar -czf $$TARBALL -C data chroma/; \
+	echo "Computing SHA256 of $$TARBALL..."; \
+	python -c "import hashlib, sys; \
+	h = hashlib.sha256(); \
+	f = open(sys.argv[1], 'rb'); \
+	[h.update(b) for b in iter(lambda: f.read(65536), b'')]; \
+	f.close(); \
+	open(sys.argv[2], 'w').write(h.hexdigest() + '  ' + sys.argv[1] + '\n'); \
+	print('wrote', sys.argv[2], '=', h.hexdigest())" $$TARBALL $$SHAFILE; \
+	echo ""; \
+	echo "Created $$TARBALL and $$SHAFILE."; \
+	echo "Upload BOTH files to GitHub Releases as release assets so that"; \
+	echo "'make download-index' can verify integrity on the consumer side."
 
 build:
 	uv build

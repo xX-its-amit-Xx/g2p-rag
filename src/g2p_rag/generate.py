@@ -9,8 +9,7 @@ from typing import Any
 
 import structlog
 from langchain_anthropic import ChatAnthropic
-from langchain.schema import HumanMessage, SystemMessage
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 from g2p_rag.retrieve import SearchResult
 

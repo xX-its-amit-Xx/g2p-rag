@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "description": "Hand-curated QA pairs grounded in the committed g2p-rag chroma index (data/chroma). Each question's expected_genes and answer_keywords are derived from real chunks present in the index so the regression gate stays meaningful. See gap #4 in ROUND_NOTES_v0.9.x.md.",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "indexed_genes_at_creation": 48,
+    "k": 5
+  },
+  "qa_pairs": [
+    {
+      "id": "cftr_summary",
+      "question": "Describe the CFTR protein function and the disease it causes.",
+      "expected_genes": ["CFTR"],
+      "expected_chunk_types": ["protein_summary", "function", "disease"],
+      "answer_keywords": ["CFTR", "cystic fibrosis"]
+    },
+    {
+      "id": "braf_kinase",
+      "question": "Where is the protein kinase domain located in BRAF?",
+      "expected_genes": ["BRAF"],
+      "expected_chunk_types": ["domain"],
+      "answer_keywords": ["BRAF", "kinase", "457"]
+    },
+    {
+      "id": "egfr_kinase",
+      "question": "What residues span the EGFR kinase domain?",
+      "expected_genes": ["EGFR"],
+      "expected_chunk_types": ["domain", "protein_summary"],
+      "answer_keywords": ["EGFR", "kinase", "712"]
+    },
+    {
+      "id": "tp53_variants",
+      "question": "Which pathogenic variants are reported across the TP53 protein?",
+      "expected_genes": ["TP53"],
+      "expected_chunk_types": ["variant_cluster"],
+      "answer_keywords": ["TP53", "Pathogenic"]
+    },
+    {
+      "id": "hbb_globin",
+      "question": "What is the globin domain in HBB and what variants does it harbor?",
+      "expected_genes": ["HBB"],
+      "expected_chunk_types": ["domain", "variant_cluster"],
+      "answer_keywords": ["HBB", "Globin"]
+    },
+    {
+      "id": "ldlr_domains",
+      "question": "What LDL-receptor class A domains does LDLR have?",
+      "expected_genes": ["LDLR"],
+      "expected_chunk_types": ["domain", "protein_summary"],
+      "answer_keywords": ["LDLR", "LDL-receptor"]
+    },
+    {
+      "id": "pik3ca_abd",
+      "question": "Describe the PI3K-ABD domain of PIK3CA.",
+      "expected_genes": ["PIK3CA"],
+      "expected_chunk_types": ["domain"],
+      "answer_keywords": ["PIK3CA", "PI3K-ABD"]
+    },
+    {
+      "id": "apoe_variants",
+      "question": "Which APOE missense variants are reported in the protein?",
+      "expected_genes": ["APOE"],
+      "expected_chunk_types": ["variant_cluster", "protein_summary"],
+      "answer_keywords": ["APOE"]
+    }
+  ]
+}

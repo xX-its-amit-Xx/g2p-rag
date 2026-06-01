@@ -526,6 +526,12 @@ def build_index(
         ),
         "gene_count": len(unique_genes),
         "embedding_model": embedder.model_name,
+        # HuggingFace revision SHA of the embedding model snapshot used to
+        # build this index (empty string when the backend doesn't expose one,
+        # e.g. OpenAI, or when the lookup failed at construction time).  The
+        # load_retriever consistency check enforces a revision match only
+        # when both stored and queried values are non-empty.
+        "embedding_model_revision": getattr(embedder, "model_revision", "") or "",
         "g2p_api_base": _g2p_api_base(),
         "build_commit": _git_head_short(),
         "total_chunks": len(chunks),
@@ -666,6 +672,18 @@ def load_retriever(
         raise EmbeddingModelMismatchError(
             f"Index built with {stored_model!r} but query uses {embedder.model_name!r}"
         )
+    else:
+        # Names match — also enforce a revision match when BOTH sides
+        # recorded one.  Skip silently if either side is empty (e.g. legacy
+        # index built before revision pinning, or OpenAI backend with no
+        # per-snapshot SHA, or offline HF lookup at embedder construction).
+        stored_rev = str((vs._col.metadata or {}).get("embedding_model_revision", "") or "")
+        queried_rev = str(getattr(embedder, "model_revision", "") or "")
+        if stored_rev and queried_rev and stored_rev != queried_rev:
+            raise EmbeddingModelMismatchError(
+                f"Index built with {stored_model!r} @ revision {stored_rev!r} "
+                f"but query uses {embedder.model_name!r} @ revision {queried_rev!r}"
+            )
 
     bm25 = BM25Index()
     if chunks:
