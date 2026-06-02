@@ -10,13 +10,16 @@ Usage::
     base = G2PRetriever(persist_dir="./data/chroma")
     lc_retriever = G2PRetrieverLangChain(retriever=base, k=5)
 
-    # Use directly with LangChain chains:
-    from langchain.chains import RetrievalQA
-    from langchain_anthropic import ChatAnthropic
+    # For LLM-driven chains, prefer the in-package G2PChain which already
+    # implements the Anthropic -> local Llama -> retrieval-only fallback:
+    from g2p_rag.generate import G2PChain
+    chain = G2PChain()  # selects the best available backend at construction
+    chunks = base.search("What domains in BRCA1 affect pathogenic variants?", k=5)
+    result = chain.answer("What domains in BRCA1 affect pathogenic variants?", chunks)
 
-    llm = ChatAnthropic(model="claude-sonnet-4-6")
-    qa = RetrievalQA.from_chain_type(llm=llm, retriever=lc_retriever)
-    answer = qa.invoke({"query": "What domains in BRCA1 affect pathogenic variants?"})
+    # If you must use LangChain's RetrievalQA directly, instantiate the LLM
+    # through the same fallback adapter used by the cookbooks rather than
+    # hard-coding ChatAnthropic, so the code still runs without an API key.
 """
 
 from __future__ import annotations

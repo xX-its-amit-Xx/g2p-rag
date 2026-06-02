@@ -6,7 +6,9 @@ Demonstrates:
   2. Chunking into domain/variant-cluster/summary chunks
   3. Building a hybrid retrieval index
   4. Querying: which BRCA1 domains are most affected by pathogenic variants?
-  5. Generating an LLM answer grounded in retrieved chunks
+  5. Generating an LLM-paraphrased summary grounded in retrieved chunks
+     (wrapped in ``if is_llm_available()`` so the script still produces useful
+     output when no LLM backend is reachable).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _citation import print_index_manifest  # noqa: E402
+from _llm import get_llm, is_llm_available  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -36,9 +39,37 @@ def _load_env() -> None:
             load_dotenv(env_path)
             print(f"Loaded environment variables from {env_path}")
         else:
-            print("No .env file found — using existing environment variables.")
+            print("No .env file found - using existing environment variables.")
     except ImportError:
         print("python-dotenv not installed; skipping .env load.")
+
+
+def _format_context(results) -> str:
+    """Render retrieval results as a labelled context block for the LLM prompt."""
+    sections = []
+    for i, r in enumerate(results, 1):
+        header = (
+            f"--- Context {i} "
+            f"[Gene:{r.chunk.gene}"
+            f"|UniProt:{r.chunk.uniprot_id}"
+            f"|{r.chunk.chunk_type}"
+            f"|Residues:{r.chunk.residue_start}-{r.chunk.residue_end}] ---"
+        )
+        sections.append(f"{header}\n{r.chunk.text}")
+    return "\n\n".join(sections)
+
+
+def _citation_tokens(results) -> list:
+    """Build canonical [Gene:UniProt:ChunkType:Residues] tokens for results."""
+    tokens = []
+    for r in results:
+        tok = (
+            f"{r.chunk.gene}:{r.chunk.uniprot_id}:"
+            f"{r.chunk.chunk_type}:"
+            f"{r.chunk.residue_start}-{r.chunk.residue_end}"
+        )
+        tokens.append(tok)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +91,7 @@ def main() -> None:
     chroma_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 70)
-    print("BRCA1 Domain–Variant Cookbook")
+    print("BRCA1 Domain-Variant Cookbook")
     print("=" * 70)
 
     # ------------------------------------------------------------------
@@ -118,15 +149,15 @@ def main() -> None:
         collection_name="brca1_cookbook",
     )
     print_index_manifest(retriever)
-    print(f"  Index ready — {len(chunks)} chunks embedded and stored.")
+    print(f"  Index ready - {len(chunks)} chunks embedded and stored.")
 
     # ------------------------------------------------------------------
-    # 6. Build generation chain
+    # 6. Build LLM via the shared _llm fallback adapter
     # ------------------------------------------------------------------
-    from g2p_rag.generate import build_chain
-
-    print("\n[4/5] Initialising LLM generation chain...")
-    chain = build_chain()
+    print("\n[4/5] Initialising LLM (Anthropic -> Llama -> NoOp fallback)...")
+    llm = get_llm()
+    llm_backend = getattr(llm, "backend", "noop")
+    print(f"  LLM backend selected: {llm_backend}")
 
     # ------------------------------------------------------------------
     # 7. Run three queries
@@ -147,7 +178,7 @@ def main() -> None:
         print(f"\nQuery {query_idx}: {query}")
         print("-" * 70)
 
-        # Retrieve top-3 results
+        # Retrieve top-3 results - pure retrieval, always runs
         results = retriever.search(query, k=3)
 
         print(f"  Top-3 retrieved chunks:")
@@ -161,13 +192,28 @@ def main() -> None:
             all_retrieved_chunks.append(r.chunk)
             retrieved_chunk_types.add(r.chunk.chunk_type)
 
-        # Generate grounded answer
-        print(f"\n  Generating answer...")
-        gen = chain.answer(query, results)
-        print(f"\n  Answer:\n{gen.answer}")
+        # Citation-helper section - always runs
+        cite_tokens = _citation_tokens(results)
+        print(f"\n  Citation tokens: {cite_tokens}")
 
-        if gen.citations:
-            print(f"\n  Citations extracted: {gen.citations}")
+        # LLM-dependent synthesis - only when a real LLM is reachable
+        if is_llm_available():
+            context = _format_context(results)
+            prompt = (
+                "You are a precise genomics assistant. Answer ONLY from the context, "
+                "citing each claim with [Gene:UniProt:ChunkType:Residues].\n\n"
+                f"Context:\n{context}\n\n"
+                f"Question: {query}\n\n"
+                "Answer:"
+            )
+            print(f"\n  Generating LLM-paraphrased answer...")
+            answer = llm(prompt, max_tokens=512)
+            print(f"\n  Answer:\n{answer}")
+        else:
+            print(
+                "\n  (LLM synthesis skipped - no Anthropic key and no reachable Llama "
+                "model. Retrieval results above are the cookbook output.)"
+            )
 
         print("\n" + "=" * 70)
 
@@ -180,6 +226,7 @@ def main() -> None:
         f"{len(retrieved_chunk_types)} chunk type(s): "
         f"{', '.join(sorted(retrieved_chunk_types))}."
     )
+    print(f"  LLM backend used: {llm_backend}")
 
 
 if __name__ == "__main__":

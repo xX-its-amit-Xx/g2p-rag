@@ -264,39 +264,42 @@ def query(
         )
         console.print(Panel(excerpt, title=f"[{i}] {header}", expand=False))
 
-    # LLM generation
+    # LLM generation — uses the 3-tier fallback in g2p_rag.generate
+    # (Anthropic -> local Llama -> retrieval-only). When no LLM backend is
+    # reachable the chain returns a structured retrieval-only answer rather
+    # than crashing, so the CLI continues to produce useful output.
     if generate:
+        try:
+            from g2p_rag import generate as gen_mod
+        except ImportError as exc:
+            console.print(f"[red]Import error (generate):[/red] {exc}")
+            raise typer.Exit(1)
+
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
             console.print(
-                "\n[yellow]Warning:[/yellow] ANTHROPIC_API_KEY not set — "
-                "skipping generation. Set the key or use [bold]--no-generate[/bold]."
+                "\n[yellow]Note:[/yellow] ANTHROPIC_API_KEY not set — "
+                "falling back to local Llama or retrieval-only mode."
             )
-        else:
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Generating answer...", total=None)
             try:
-                from g2p_rag import generate as gen_mod
-            except ImportError as exc:
-                console.print(f"[red]Import error (generate):[/red] {exc}")
+                chain = gen_mod.G2PChain(model=llm_model)
+                answer = chain.run(question=question, chunks=results)
+            except Exception as exc:
+                console.print(f"[red]Generation failed:[/red] {exc}")
+                log.exception("query.generation_failed")
                 raise typer.Exit(1)
 
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                task = progress.add_task("Generating answer...", total=None)
-                try:
-                    chain = gen_mod.G2PChain(model=llm_model)
-                    answer = chain.run(question=question, chunks=results)
-                except Exception as exc:
-                    console.print(f"[red]Generation failed:[/red] {exc}")
-                    log.exception("query.generation_failed")
-                    raise typer.Exit(1)
-
-            console.print(
-                Panel(answer, title="[bold green]Generated Answer[/bold green]", expand=False)
-            )
+        console.print(
+            Panel(answer, title="[bold green]Generated Answer[/bold green]", expand=False)
+        )
 
 
 # ---------------------------------------------------------------------------
