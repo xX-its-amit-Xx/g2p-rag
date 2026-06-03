@@ -73,14 +73,23 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest  # noqa: E402
+from _citation import (  # noqa: E402
+    Cited,
+    assert_supported,
+    find_in_chunks,
+    print_index_manifest,
+    resolve_chroma_path,
+)
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CHROMA_DIR = "d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma"
+# CHROMA_DIR is resolved at runtime via resolve_chroma_path() inside main()
+# so module import does not depend on a developer-specific absolute path.
+# The default for the in-repo / codespace install is ``<repo>/data/chroma``;
+# override with $G2P_CHROMA_PATH.
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 COLLECTION = "g2p_proteins"
 
@@ -342,12 +351,17 @@ def main() -> None:  # noqa: C901  — orchestration script, deliberately linear
     print("Orphanet / OMIM Gene-Disease Eligibility Matcher (citation-disciplined)")
     print("=" * 72)
 
+    # Resolve ChromaDB persist_dir up-front so both the audit (Step 0) and
+    # the retriever (Step 1) share a single source of truth — and so a
+    # missing/empty index fails loudly here rather than 50 lines in.
+    chroma_dir_audit = resolve_chroma_path()
+
     # ------------------------------------------------------------------
     # Step 0 — Audit: the index has no Orphanet/OMIM/MONDO IDs.
     # ------------------------------------------------------------------
     print("\n## Step 0 — Audit identifier coverage in the index")
     print("-" * 72)
-    audit = _audit_index_has_no_ids(CHROMA_DIR)
+    audit = _audit_index_has_no_ids(chroma_dir_audit)
     print(f"  Chunks scanned (whole collection): {audit['total']}")
     print(f"  Chunks mentioning 'Orphanet'/'ORPHA': {audit['orphanet']}")
     print(f"  Chunks mentioning 'OMIM':            {audit['OMIM']}")
@@ -371,11 +385,12 @@ def main() -> None:  # noqa: C901  — orchestration script, deliberately linear
     # ------------------------------------------------------------------
     from g2p_rag import G2PRetriever
 
+    chroma_dir = chroma_dir_audit
     print("\n## Step 1 — Initialising G2PRetriever")
     print("-" * 72)
-    print(f"  persist_dir={CHROMA_DIR}")
+    print(f"  persist_dir={chroma_dir}")
     retriever = G2PRetriever(
-        persist_dir=CHROMA_DIR,
+        persist_dir=chroma_dir,
         embedding_model=EMBEDDING_MODEL,
         collection_name=COLLECTION,
     )

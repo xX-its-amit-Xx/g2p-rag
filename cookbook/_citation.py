@@ -28,6 +28,7 @@ Run ``python _citation.py`` for a self-test demo.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -45,7 +46,143 @@ __all__ = [
     "find_in_chunks",
     "assert_supported",
     "print_index_manifest",
+    "resolve_chroma_path",
+    "assert_gene_in_index",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Portable ChromaDB path resolution (codespace + local-dev portability)
+# ---------------------------------------------------------------------------
+
+# Legacy developer absolute path. Kept here as a LAST-resort fallback so the
+# cookbooks still work on the original Windows workstation without env-var
+# configuration, but a fresh checkout on Linux / Codespace / a teammate's box
+# resolves to the in-repo ./data/chroma instead (priority 2 below).
+_LEGACY_DEV_CHROMA_PATH = "d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma"
+
+
+def _repo_root() -> Path:
+    """Return the g2p-rag repo root (the parent of cookbook/)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _chroma_is_non_empty(path: Path) -> bool:
+    """Return True iff *path* hosts a ChromaDB whose primary collection has rows.
+
+    Uses ``chromadb.PersistentClient`` to peek at the canonical
+    ``g2p_proteins`` collection and check ``coll.count() > 0``. Returns False
+    on any error (missing dir, missing collection, import failure) so the
+    caller can fall through to the next candidate path rather than crashing.
+    """
+    if not path.exists() or not path.is_dir():
+        return False
+    try:
+        import chromadb  # type: ignore[import]
+    except Exception:
+        # If chromadb isn't importable we have bigger problems than path
+        # selection; treat as "cannot verify -> not usable" so the caller
+        # tries the next candidate or raises a clear FileNotFoundError.
+        return False
+    try:
+        client = chromadb.PersistentClient(path=str(path))
+        # get_or_create_collection would silently CREATE an empty collection
+        # in this dir on first use, which then makes count()==0 forever. We
+        # specifically want to inspect what's already on disk, so prefer
+        # get_collection and treat its absence as "empty".
+        try:
+            coll = client.get_collection("g2p_proteins")
+        except Exception:
+            return False
+        return coll.count() > 0
+    except Exception:
+        return False
+
+
+def resolve_chroma_path() -> str:
+    """Resolve the ChromaDB persist_dir for cookbook scripts.
+
+    Priority order:
+
+      1. ``$G2P_CHROMA_PATH`` environment variable (explicit override).
+      2. ``<repo-root>/data/chroma`` (the in-repo location written by
+         ``g2p-rag ingest`` — works in codespaces and standard installs).
+      3. The legacy developer absolute path on the original Windows box.
+
+    A candidate is "usable" only if the directory exists AND contains a
+    non-empty ``g2p_proteins`` ChromaDB collection (verified via
+    ``chromadb.PersistentClient``). This guards against the silent-failure
+    mode where ChromaDB would otherwise auto-create an empty collection in
+    a non-existent path and the cookbook would later raise
+    ``CollectionEmptyError`` 50 lines into the script.
+
+    Raises
+    ------
+    FileNotFoundError
+        If none of the candidate paths host a non-empty collection. The
+        error message enumerates every path that was tried so the user can
+        either point ``$G2P_CHROMA_PATH`` at a real index or run
+        ``g2p-rag ingest`` to build one.
+    """
+    candidates: list[tuple[str, Path]] = []
+
+    env_path = os.environ.get("G2P_CHROMA_PATH")
+    if env_path:
+        candidates.append(("G2P_CHROMA_PATH env var", Path(env_path)))
+
+    candidates.append(("in-repo ./data/chroma", _repo_root() / "data" / "chroma"))
+    candidates.append(("legacy dev fallback", Path(_LEGACY_DEV_CHROMA_PATH)))
+
+    tried: list[str] = []
+    for label, path in candidates:
+        tried.append(f"  - {label}: {path}")
+        if _chroma_is_non_empty(path):
+            return str(path)
+
+    raise FileNotFoundError(
+        "No usable ChromaDB index found for the g2p-rag cookbook.\n"
+        "Tried (in priority order):\n"
+        + "\n".join(tried)
+        + "\nFix one of:\n"
+        "  - Set $G2P_CHROMA_PATH to an existing non-empty ChromaDB directory.\n"
+        "  - Run `g2p-rag ingest` to build the default <repo>/data/chroma index.\n"
+        "  - Mount the legacy dev directory at the path above."
+    )
+
+
+def assert_gene_in_index(gene: str, retriever: object) -> bool:
+    """Return True iff *gene* is present in the retriever's ChromaDB collection.
+
+    If the gene is absent, prints a clear ``[skipping: ...]`` message and
+    returns False so the caller can ``continue`` (or ``sys.exit(0)``) instead
+    of raising a confusing downstream error 30 lines later.
+
+    Uses :func:`g2p_rag.retrieve.index_stats` to enumerate the gene list
+    persisted alongside the collection (no extra retrieval round-trip
+    needed). On any unexpected error we conservatively return True — the
+    caller will still get a clean failure if it actually tries to query a
+    missing gene, but we don't break working cookbooks because a peek call
+    failed.
+    """
+    persist_dir = getattr(retriever, "persist_dir", None)
+    collection_name = getattr(retriever, "collection_name", "g2p_proteins")
+    if persist_dir is None:
+        # No way to check; let the caller proceed and see what happens.
+        return True
+    try:
+        from g2p_rag.retrieve import index_stats
+        stats = index_stats(Path(persist_dir), collection_name=collection_name)
+    except Exception:
+        # Couldn't inspect — don't pre-emptively skip; let the caller run.
+        return True
+    genes = set(stats.get("genes", []))
+    if gene in genes:
+        return True
+    print(
+        f"[skipping: gene {gene!r} not in this index; ingest it first "
+        f"(persist_dir={persist_dir}, indexed_genes={len(genes)})]"
+    )
+    return False
 
 
 # ---------------------------------------------------------------------------

@@ -36,7 +36,13 @@ from typing import Iterable
 
 from g2p_rag import G2PRetriever, RetrievedChunk
 
-from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest
+from _citation import (
+    Cited,
+    assert_supported,
+    find_in_chunks,
+    print_index_manifest,
+    resolve_chroma_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +196,7 @@ def main() -> None:
     print("=" * 72)
 
     retriever = G2PRetriever(
-        persist_dir="d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma",
+        persist_dir=resolve_chroma_path(),
         embedding_model="all-MiniLM-L6-v2",
         collection_name="g2p_proteins",
     )

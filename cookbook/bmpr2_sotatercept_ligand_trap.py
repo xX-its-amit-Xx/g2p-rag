@@ -35,7 +35,13 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest  # noqa: E402
+from _citation import (  # noqa: E402
+    Cited,
+    assert_supported,
+    find_in_chunks,
+    print_index_manifest,
+    resolve_chroma_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +102,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     from g2p_rag import G2PRetriever
 
-    chroma_dir = "d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma"
+    chroma_dir = resolve_chroma_path()
     print(f"\n[1/4] Connecting to ChromaDB at {chroma_dir} ...")
     retriever = G2PRetriever(
         persist_dir=chroma_dir,

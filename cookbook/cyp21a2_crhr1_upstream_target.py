@@ -43,7 +43,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from g2p_rag import G2PRetriever, RetrievedChunk
 
 # Citation-discipline helper (built in the preceding workflow phase).
-from _citation import Cited, assert_supported, find_in_chunks, print_index_manifest
+from _citation import (
+    Cited,
+    assert_supported,
+    assert_gene_in_index,
+    find_in_chunks,
+    print_index_manifest,
+    resolve_chroma_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +76,10 @@ def _load_env() -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
-CHROMA_DIR = "d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma"
+# CHROMA_DIR is resolved at runtime via resolve_chroma_path() in main() so
+# that import-time module load does not depend on the legacy developer
+# absolute path. The default for the in-repo / codespace install is
+# ``<repo>/data/chroma``; override with $G2P_CHROMA_PATH.
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 COLLECTION = "g2p_proteins"
 
@@ -142,12 +152,22 @@ def main() -> None:
     print("Crinecerfont (CRHR1 antagonist) for CYP21A2-deficiency CAH")
     print("=" * 72)
 
+    chroma_dir = resolve_chroma_path()
     retriever = G2PRetriever(
-        persist_dir=CHROMA_DIR,
+        persist_dir=chroma_dir,
         embedding_model=EMBEDDING_MODEL,
         collection_name=COLLECTION,
     )
     print_index_manifest(retriever)
+
+    # This cookbook is specifically about CYP21A2 + CRHR1; if either gene is
+    # missing from the resolved index, skip cleanly with a clear message
+    # rather than crashing 30 lines into the retrieval loop.
+    import sys as _sys
+    if not assert_gene_in_index("CYP21A2", retriever):
+        _sys.exit(0)
+    if not assert_gene_in_index("CRHR1", retriever):
+        _sys.exit(0)
 
     # ------------------------------------------------------------------
     # 2. CYP21A2 - the disease gene
