@@ -42,8 +42,10 @@ Drug-discovery question:
 
 Run with the project venv:
     $env:PYTHONIOENCODING="utf-8"
-    d:/Users/ashenoy00000/.windsurf/g2p-rag/.venv/Scripts/python.exe `
-        d:/Users/ashenoy00000/.windsurf/g2p-rag/cookbook/rare_variant_druggability_leaderboard.py
+    .venv/Scripts/python.exe cookbook/rare_variant_druggability_leaderboard.py
+
+On Linux/macOS:
+    PYTHONIOENCODING=utf-8 .venv/bin/python cookbook/rare_variant_druggability_leaderboard.py
 """
 
 from __future__ import annotations

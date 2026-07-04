@@ -55,13 +55,6 @@ __all__ = [
 # Portable ChromaDB path resolution (codespace + local-dev portability)
 # ---------------------------------------------------------------------------
 
-# Legacy developer absolute path. Kept here as a LAST-resort fallback so the
-# cookbooks still work on the original Windows workstation without env-var
-# configuration, but a fresh checkout on Linux / Codespace / a teammate's box
-# resolves to the in-repo ./data/chroma instead (priority 2 below).
-_LEGACY_DEV_CHROMA_PATH = "d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma"
-
-
 def _repo_root() -> Path:
     """Return the g2p-rag repo root (the parent of cookbook/)."""
     return Path(__file__).resolve().parent.parent
@@ -104,11 +97,10 @@ def resolve_chroma_path() -> str:
 
     Priority order:
 
-      1. ``$G2P_CHROMA_PATH`` environment variable (explicit override).
+      1. ``$G2P_INDEX_DIR`` or ``$G2P_CHROMA_PATH`` environment variable
+         (explicit override).
       2. ``<repo-root>/data/chroma`` (the in-repo location written by
          ``g2p-rag ingest`` — works in codespaces and standard installs).
-      3. The legacy developer absolute path on the original Windows box.
-
     A candidate is "usable" only if the directory exists AND contains a
     non-empty ``g2p_proteins`` ChromaDB collection (verified via
     ``chromadb.PersistentClient``). This guards against the silent-failure
@@ -121,17 +113,16 @@ def resolve_chroma_path() -> str:
     FileNotFoundError
         If none of the candidate paths host a non-empty collection. The
         error message enumerates every path that was tried so the user can
-        either point ``$G2P_CHROMA_PATH`` at a real index or run
+        either point ``$G2P_INDEX_DIR`` at a real index or run
         ``g2p-rag ingest`` to build one.
     """
     candidates: list[tuple[str, Path]] = []
 
-    env_path = os.environ.get("G2P_CHROMA_PATH")
+    env_path = os.environ.get("G2P_INDEX_DIR") or os.environ.get("G2P_CHROMA_PATH")
     if env_path:
-        candidates.append(("G2P_CHROMA_PATH env var", Path(env_path)))
+        candidates.append(("G2P_INDEX_DIR/G2P_CHROMA_PATH env var", Path(env_path)))
 
     candidates.append(("in-repo ./data/chroma", _repo_root() / "data" / "chroma"))
-    candidates.append(("legacy dev fallback", Path(_LEGACY_DEV_CHROMA_PATH)))
 
     tried: list[str] = []
     for label, path in candidates:
@@ -144,9 +135,8 @@ def resolve_chroma_path() -> str:
         "Tried (in priority order):\n"
         + "\n".join(tried)
         + "\nFix one of:\n"
-        "  - Set $G2P_CHROMA_PATH to an existing non-empty ChromaDB directory.\n"
+        "  - Set $G2P_INDEX_DIR to an existing non-empty ChromaDB directory.\n"
         "  - Run `g2p-rag ingest` to build the default <repo>/data/chroma index.\n"
-        "  - Mount the legacy dev directory at the path above."
     )
 
 

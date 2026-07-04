@@ -103,7 +103,7 @@ def _load_env() -> None:
     try:
         from dotenv import load_dotenv  # type: ignore[import]
 
-        env_path = Path("d:/Users/ashenoy00000/.windsurf/g2p-rag/.env")
+        env_path = Path(__file__).resolve().parent.parent / ".env"
         if env_path.exists():
             load_dotenv(env_path)
             print(f"Loaded environment variables from {env_path}")

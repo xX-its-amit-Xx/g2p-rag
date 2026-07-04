@@ -22,7 +22,8 @@ The script runs end-to-end and prints a chunk-cited cohort table such as
 
 Honest constraint, called out up-front
 --------------------------------------
-The current ChromaDB snapshot at d:/Users/ashenoy00000/.windsurf/g2p-rag/data/chroma
+The current ChromaDB snapshot resolved from ``G2P_INDEX_DIR`` /
+``G2P_CHROMA_PATH`` or ``./data/chroma``
 DOES NOT contain Orphanet, OMIM, MONDO, or GenCC identifier strings in any
 chunk text (verified at script start by scanning every chunk). The original
 task description named `gencc_diseases` chunks; those are not present in
@@ -42,8 +43,10 @@ this v0.10 snapshot. The script therefore:
 Run
 ---
     $env:PYTHONIOENCODING = "utf-8"
-    d:/Users/ashenoy00000/.windsurf/g2p-rag/.venv/Scripts/python.exe \
-        d:/Users/ashenoy00000/.windsurf/g2p-rag/cookbook/orphanet_omim_eligibility_matcher.py
+    .venv/Scripts/python.exe cookbook/orphanet_omim_eligibility_matcher.py
+
+On Linux/macOS:
+    PYTHONIOENCODING=utf-8 .venv/bin/python cookbook/orphanet_omim_eligibility_matcher.py
 
 CLI flags
 ---------

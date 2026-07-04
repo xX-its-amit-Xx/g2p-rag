@@ -3,8 +3,11 @@
 Invoke directly with the project venv::
 
     $env:PYTHONIOENCODING="utf-8"
-    d:/Users/ashenoy00000/.windsurf/g2p-rag/.venv/Scripts/python.exe `
-        d:/Users/ashenoy00000/.windsurf/g2p-rag/scripts/_reingest_47.py
+    .venv/Scripts/python.exe scripts/_reingest_47.py
+
+On Linux/macOS::
+
+    PYTHONIOENCODING=utf-8 .venv/bin/python scripts/_reingest_47.py
 
 The gene list is duplicated from cookbook/rare_variant_druggability_leaderboard.py
 on purpose — that file is the canonical source of "what's in the v0.1.2 index"

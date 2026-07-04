@@ -17,8 +17,10 @@ specific retrieved chunk or explicitly tagged ``[NO_RAG_SOURCE]`` as
 textbook context.
 
 Run with the project venv:
-    d:/Users/ashenoy00000/.windsurf/g2p-rag/.venv/Scripts/python.exe \
-        d:/Users/ashenoy00000/.windsurf/g2p-rag/cookbook/bmpr2_sotatercept_ligand_trap.py
+    .venv/Scripts/python.exe cookbook/bmpr2_sotatercept_ligand_trap.py
+
+On Linux/macOS:
+    .venv/bin/python cookbook/bmpr2_sotatercept_ligand_trap.py
 """
 
 from __future__ import annotations
